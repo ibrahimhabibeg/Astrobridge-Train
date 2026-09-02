@@ -60,7 +60,7 @@ def generate_caption_batch(
     modality_max_tokens: dict,
     prompt_template: str,
     device: str,
-    raw_inputs: dict,
+    raw_inputs_list: list[dict],
     max_new_tokens: int = 128,
     question: str = None,
 ) -> list[str]:
@@ -68,25 +68,24 @@ def generate_caption_batch(
     from captioner.utils.prompt import human_readable_subset
     
     with torch.no_grad():
-        if not raw_inputs:
-            raise ValueError("raw_inputs is empty")
+        if not raw_inputs_list:
+            raise ValueError("raw_inputs_list is empty")
     
-        shown = frozenset(raw_inputs.keys())
-        
-        # Determine batch size from the first modality's first tensor
-        first_mod = next(iter(raw_inputs.values()))
-        B = next(iter(first_mod.values())).shape[0] if isinstance(first_mod, dict) else 1
+        shown = frozenset(raw_inputs_list[0].keys())
+        B = len(raw_inputs_list)
         
         modality_batch = {}
         for name, out_dim in modality_out_dims.items():
             T_m = modality_max_tokens[name]
             tokens = torch.zeros((B, T_m, out_dim), dtype=torch.float32, device=device)
             mask = torch.ones((B, T_m), dtype=torch.bool, device=device)
-            if name in raw_inputs:
-                raw_tokens = encoders[name].encode(raw_inputs[name]).to(torch.float32)
-                n = min(raw_tokens.shape[1], T_m)
-                tokens[:, :n] = raw_tokens[:, :n].to(device)
-                mask[:, :n] = False
+            
+            for i, raw_inputs in enumerate(raw_inputs_list):
+                if name in raw_inputs:
+                    raw_tokens = encoders[name].encode(raw_inputs[name]).to(torch.float32)
+                    n = min(raw_tokens.shape[1], T_m)
+                    tokens[i, :n] = raw_tokens[0, :n].to(device)
+                    mask[i, :n] = False
             modality_batch[name] = {"tokens": tokens, "mask": mask}
     
         prompt_text = question if question is not None else prompt_template.format(modalities=human_readable_subset(shown))
@@ -98,11 +97,15 @@ def generate_caption_batch(
             prompt_embeds = model.llm.get_input_embeddings()(prompt_ids)
             inputs_embeds = torch.cat([prefix, prompt_embeds], dim=1)
             attention_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=device)
+            
+            pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+            
             gen = model.llm.generate(
                 inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
+                pad_token_id=pad_token_id,
             )
         return tokenizer.batch_decode(gen, skip_special_tokens=True)
 
@@ -189,38 +192,29 @@ def run_evaluation(repo_id: str, prompt: str, timestamp_dir: str, batch_size: in
         z_values = batch_df['Z'].tolist()
         correct_answers = [get_correct_answer(z) for z in z_values]
         
-        fluxes = []
-        wavelengths = []
-        ivars = []
-        masks = []
         surveys = batch_df['survey'].tolist() if 'survey' in batch_df.columns else ["sdss"] * len(batch_df)
         
-        for _, row in batch_df.iterrows():
+        raw_inputs_list = []
+        for i, (_, row) in enumerate(batch_df.iterrows()):
             spec_data = row["spectrum"]
-            f_tensor = torch.tensor(spec_data["flux"]).float()
-            fluxes.append(f_tensor)
-            wavelengths.append(torch.tensor(spec_data["lambda"]).float())
+            f_tensor = torch.tensor(spec_data["flux"]).float().unsqueeze(0)
+            wavelength = torch.tensor(spec_data["lambda"]).float().unsqueeze(0)
+            
+            spectrum_dict = {
+                "flux": f_tensor,
+                "wavelength": wavelength,
+                "survey": [surveys[i]]
+            }
             
             if "ivar" in spec_data:
-                ivars.append(torch.tensor(spec_data["ivar"]).float())
+                spectrum_dict["ivar"] = torch.tensor(spec_data["ivar"]).float().unsqueeze(0)
                 
             if "mask" in spec_data:
-                masks.append(torch.tensor(spec_data["mask"]).bool())
+                spectrum_dict["mask"] = torch.tensor(spec_data["mask"]).bool().unsqueeze(0)
             else:
-                # Default to all-False (valid) for the actual length of this spectrum
-                masks.append(torch.zeros_like(f_tensor, dtype=torch.bool))
-        
-        spectrum_batch = {
-            "flux": rnn.pad_sequence(fluxes, batch_first=True),
-            "wavelength": rnn.pad_sequence(wavelengths, batch_first=True),
-            "survey": surveys,
-            # We explicitly pad the mask with True (invalid) so AION ignores the zero-padded flux/wavelength values
-            "mask": rnn.pad_sequence(masks, batch_first=True, padding_value=True)
-        }
-        if ivars:
-            spectrum_batch["ivar"] = rnn.pad_sequence(ivars, batch_first=True)
-            
-        raw_inputs = {"spectra": spectrum_batch}
+                spectrum_dict["mask"] = torch.zeros_like(f_tensor, dtype=torch.bool)
+                
+            raw_inputs_list.append({"spectra": spectrum_dict})
         
         try:
             answers = generate_caption_batch(
@@ -231,7 +225,7 @@ def run_evaluation(repo_id: str, prompt: str, timestamp_dir: str, batch_size: in
                 max_tokens, 
                 cfg.prompt.template, 
                 device,
-                raw_inputs, 
+                raw_inputs_list, 
                 question=prompt,
             )
             
@@ -263,7 +257,7 @@ def run_evaluation(repo_id: str, prompt: str, timestamp_dir: str, batch_size: in
 
 @app.local_entrypoint()
 def main():
-    repo_id = "UniverseTBD/astrobridge-model-v2"
+    repo_id = "UniverseTBD/astrobridge-captioner-v3"
     timestamp_dir = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     prompt = (
