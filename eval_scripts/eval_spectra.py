@@ -61,7 +61,7 @@ def generate_caption_batch(
     prompt_template: str,
     device: str,
     raw_inputs_list: list[dict],
-    max_new_tokens: int = 128,
+    max_new_tokens: int = 256,
     question: str = None,
 ) -> list[str]:
     import torch
@@ -327,33 +327,63 @@ def compute_and_save_metrics(results_dir: str):
     for t, p in zip(y_true, y_pred):
         cm[t][p] += 1
         
-    metrics_str = []
-    metrics_str.append("=== Evaluation Metrics ===")
-    metrics_str.append(f"Total Samples: {total}")
-    metrics_str.append(f"Format Errors (UNKNOWN): {format_errors} ({(format_errors/total)*100 if total else 0:.1f}%)")
-    metrics_str.append(f"Global Accuracy: {accuracy*100:.2f}% ({correct}/{total})")
-    metrics_str.append(f"Mean Absolute Error (Ordinal off-by-X): {mae:.3f} classes")
-    metrics_str.append("")
-    metrics_str.append("--- Confusion Matrix ---")
-    metrics_str.append("         Predicted")
-    metrics_str.append("       A   B   C   D   E")
-    
-    for t in "ABCDE":
-        row = [f"{cm[t][p]:3d}" for p in "ABCDE"]
-        metrics_str.append(f"True {t} " + " ".join(row))
-        
-    metrics_str.append("")
-    metrics_str.append("--- Per-Class Recall ---")
+    per_class_metrics = {}
     for t in "ABCDE":
         row_total = sum(cm[t].values())
-        if row_total > 0:
-            recall = cm[t][t] / row_total
-            metrics_str.append(f"{t}: {recall*100:.1f}% ({cm[t][t]}/{row_total})")
-        else:
-            metrics_str.append(f"{t}: N/A (0 instances)")
-            
-    metrics_text = "\n".join(metrics_str)
+        recall = cm[t][t] / row_total if row_total > 0 else 0.0
+        
+        col_total = sum(cm[p][t] for p in "ABCDE")
+        precision = cm[t][t] / col_total if col_total > 0 else 0.0
+        
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+        
+        per_class_metrics[t] = {
+            "support": row_total,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1
+        }
+        
+    macro_f1 = sum(m["f1"] for m in per_class_metrics.values()) / 5.0
     
-    print("\n" + metrics_text)
-    with open(os.path.join(results_dir, "metrics.txt"), "w") as f:
-        f.write(metrics_text)
+    total_valid = sum(m["support"] for m in per_class_metrics.values())
+    if total_valid > 0:
+        weighted_f1 = sum(m["f1"] * m["support"] for m in per_class_metrics.values()) / total_valid
+    else:
+        weighted_f1 = 0.0
+
+    metrics = {
+        "total_samples": total,
+        "format_errors": format_errors,
+        "format_error_rate": format_errors / total if total > 0 else 0.0,
+        "global_accuracy": accuracy,
+        "mean_absolute_error": mae,
+        "macro_f1": macro_f1,
+        "weighted_f1": weighted_f1,
+        "confusion_matrix": cm,
+        "per_class_metrics": per_class_metrics
+    }
+    
+    print("\n=== Evaluation Metrics ===")
+    print(f"Total Samples: {total}")
+    print(f"Format Errors (UNKNOWN): {format_errors} ({(metrics['format_error_rate'])*100:.1f}%)")
+    print(f"Global Accuracy: {accuracy*100:.2f}% ({correct}/{total})")
+    print(f"Mean Absolute Error (Ordinal off-by-X): {mae:.3f} classes")
+    print(f"Macro F1: {macro_f1:.4f}")
+    print(f"Weighted F1: {weighted_f1:.4f}")
+    
+    print("\n--- Confusion Matrix ---")
+    print("         Predicted")
+    print("       A   B   C   D   E")
+    for t in "ABCDE":
+        row = [f"{cm[t][p]:3d}" for p in "ABCDE"]
+        print(f"True {t} " + " ".join(row))
+        
+    print("\n--- Per-Class Metrics ---")
+    for t in "ABCDE":
+        m = per_class_metrics[t]
+        print(f"{t}: Precision: {m['precision']:.4f}, Recall: {m['recall']:.4f}, F1: {m['f1']:.4f} (Support: {m['support']})")
+            
+    metrics_path = os.path.join(results_dir, "metrics.json")
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=4)
