@@ -45,12 +45,12 @@ def extract_final_answer(response: str, labels_str: str) -> str:
     return "UNKNOWN"
 
 class BaseQwenResponder:
-    def __init__(self, model_id: str, device: str):
-        self._model_id = model_id
+    def __init__(self, astrobridge_id: str, base_llm_id: str, device: str):
+        self._model_id = base_llm_id
         self._device = device
-        self._processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        self._processor = AutoProcessor.from_pretrained(self._model_id, trust_remote_code=True)
         self._model = Qwen3_5ForConditionalGeneration.from_pretrained(
-            model_id, 
+            self._model_id, 
             device_map="auto",
             torch_dtype=torch.bfloat16,
             trust_remote_code=True

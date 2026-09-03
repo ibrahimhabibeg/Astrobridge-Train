@@ -9,12 +9,13 @@ import subprocess
 # Edit these values before running the script
 # ==========================================
 RUN_CONFIG = {
-    "responder_type": "astrobridge",      # 'astrobridge' or 'base_qwen'
-    "model_id": "UniverseTBD/astrobridge-captioner-v3", 
-    "bucket_scheme": "5-group",           # '5-group' or '3-group'
-    "batch_size": 256,
-    "gpu": "A100-80GB",                   # Modal GPU
-    "suffix_tag": None,                   # Leave as None to auto-generate (responder_scheme)
+    "responder_type": "base_qwen_text",                    # 'astrobridge', 'base_qwen', or 'base_qwen_text'
+    "astrobridge_id": "UniverseTBD/astrobridge-captioner-v3", # The fine-tuned checkpoint
+    "base_llm_id": "Qwen/Qwen3.5-9B",                   # The base language model
+    "bucket_scheme": "5-group",                         # '5-group' or '3-group'
+    "batch_size": 64,
+    "gpu": "A100-80GB",                                 # 'A100-80GB' (for astrobridge) or 'A10' (for base)
+    "suffix_tag": None,                                 # Leave as None to auto-generate (responder_scheme)
 }
 # ==========================================
 
@@ -24,10 +25,19 @@ app = modal.App("astrobridge-evaluation")
 def download_models():
     import yaml
     from huggingface_hub import snapshot_download, hf_hub_download
-    model_id = RUN_CONFIG["model_id"]
-    snapshot_download(model_id)
-    hf_hub_download(repo_id=model_id, filename="middle.pt")
-    snapshot_download("Qwen/Qwen3.5-9B")
+    
+    astrobridge_id = RUN_CONFIG["astrobridge_id"]
+    base_llm_id = RUN_CONFIG["base_llm_id"]
+    
+    print(f"Downloading AstroBridge extra weights: {astrobridge_id}")
+    snapshot_download(astrobridge_id)
+    hf_hub_download(repo_id=astrobridge_id, filename="middle.pt")
+    
+    print(f"Downloading Base LLM: {base_llm_id}")
+    snapshot_download(base_llm_id)
+        
+    # Dataset
+    print("Downloading evaluation dataset...")
     hf_hub_download(
         repo_id="UniverseTBD/AstroBridge-Data",
         filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
@@ -37,7 +47,7 @@ def download_models():
 image = (
     modal.Image.debian_slim(python_version="3.10")
     .pip_install_from_pyproject("pyproject.toml")
-    .pip_install("huggingface_hub", "pyyaml", "tqdm")
+    .pip_install("huggingface_hub", "pyyaml", "tqdm", "matplotlib", "Pillow", "torchvision")
     .run_function(download_models)
     .add_local_dir("src", remote_path="/root/src")
     .add_local_dir("configs", remote_path="/root/configs")
@@ -64,7 +74,13 @@ def run_evaluation(timestamp_dir: str):
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     scheme = get_bucket_scheme(RUN_CONFIG["bucket_scheme"])
-    responder = get_responder(RUN_CONFIG["responder_type"], RUN_CONFIG["model_id"], device)
+    
+    responder = get_responder(
+        RUN_CONFIG["responder_type"], 
+        RUN_CONFIG["astrobridge_id"], 
+        RUN_CONFIG["base_llm_id"], 
+        device
+    )
     
     df_test = load_test_spectra()
     batch_size = RUN_CONFIG["batch_size"]

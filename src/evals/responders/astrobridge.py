@@ -26,14 +26,14 @@ def extract_final_answer(response: str, labels_str: str) -> str:
     return "UNKNOWN"
 
 class AstroBridgeResponder:
-    def __init__(self, repo_id: str, device: str):
+    def __init__(self, astrobridge_id: str, base_llm_id: str, device: str):
         self.device = device
-        self.repo_id = repo_id
+        self.repo_id = astrobridge_id
         self.cfg = load_config("base", "data", "modalities", "model", "stage2")
         print("Building base LLM...")
         llm, self.tokenizer = build_llm(self.cfg)
-        print(f"Loading LoRA adapter from {repo_id}...")
-        llm = PeftModel.from_pretrained(llm, repo_id)
+        print(f"Loading LoRA adapter from {self.repo_id}...")
+        llm = PeftModel.from_pretrained(llm, self.repo_id)
         d_llm = get_llm_hidden_size(llm)
         print("Building FusionStack...")
         self.out_dims = {n: int(c.out_dim) for n, c in self.cfg.modalities.items()}
@@ -45,8 +45,8 @@ class AstroBridgeResponder:
             projector_hidden_mult=int(self.cfg.projector.hidden_mult),
             projector_dropout=float(self.cfg.projector.dropout),
         )    
-        print(f"Downloading middle.pt from {repo_id}...")
-        middle_pt_path = hf_hub_download(repo_id=repo_id, filename="middle.pt")
+        print(f"Downloading middle.pt from {self.repo_id}...")
+        middle_pt_path = hf_hub_download(repo_id=self.repo_id, filename="middle.pt")
         fusion_stack.load_state_dict(torch.load(middle_pt_path, map_location="cpu", weights_only=False))    
         print("Initializing full Captioner model and encoders...")
         self.model = Captioner(fusion_stack, llm, n_queries=int(self.cfg.qformer.n_queries))
