@@ -57,6 +57,12 @@ class BaseQwenResponder:
         )
         self._model.eval()
 
+    def get_config(self) -> dict:
+        return {
+            "type": "BaseQwenResponder",
+            "model_id": self._model_id
+        }
+
     def respond_batch(self, samples: List[EvalSample], scheme: BucketScheme) -> List[ModelResponse]:        
         prompt = build_mcq_prompt(scheme)
         messages_batch = []

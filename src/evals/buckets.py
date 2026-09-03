@@ -3,6 +3,7 @@ from typing import List
 
 @dataclass
 class BucketScheme:
+    name: str
     labels: List[str]
     thresholds: List[float]
     descriptions: List[str]
@@ -12,6 +13,14 @@ class BucketScheme:
             raise ValueError("Number of thresholds must be one less than number of labels")
         if len(self.descriptions) != len(self.labels):
             raise ValueError("Number of descriptions must match number of labels")
+            
+    def get_config(self) -> dict:
+        return {
+            "name": self.name,
+            "labels": self.labels,
+            "thresholds": self.thresholds,
+            "descriptions": self.descriptions
+        }
             
     def classify(self, z: float) -> str:
         for i, threshold in enumerate(self.thresholds):
@@ -33,6 +42,7 @@ class BucketScheme:
 
 def five_bucket_scheme() -> BucketScheme:
     return BucketScheme(
+        name="5-group (A-E)",
         labels=["A", "B", "C", "D", "E"],
         thresholds=[0.1, 0.5, 1.0, 2.0],
         descriptions=[
@@ -46,6 +56,7 @@ def five_bucket_scheme() -> BucketScheme:
 
 def three_bucket_scheme() -> BucketScheme:
     return BucketScheme(
+        name="3-group (A-C)",
         labels=["A", "B", "C"],
         thresholds=[0.1, 0.5],
         descriptions=[

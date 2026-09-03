@@ -57,6 +57,14 @@ def run_evaluation(model_id: str, timestamp_dir: str, batch_size: int = 4):
     output_dir = f"/outputs/{timestamp_dir}"
     os.makedirs(output_dir, exist_ok=True)
     
+    metadata = {
+        "responder": responder.get_config(),
+        "bucket_scheme": scheme.get_config(),
+        "batch_size": batch_size
+    }
+    with open(f"{output_dir}/metadata.json", "w") as f:
+        json.dump(metadata, f, indent=4)
+    
     def chunker(seq, size):
         return (seq[pos:pos + size] for pos in range(0, len(seq), size))
         
@@ -85,7 +93,9 @@ def run_evaluation(model_id: str, timestamp_dir: str, batch_size: int = 4):
                     "Z": z_value,
                     "correct_answer": correct,
                     "model_answer": resp.label,
-                    "full_response": resp.raw_text
+                    "full_response": resp.raw_text,
+                    "responder": metadata["responder"]["type"],
+                    "scheme": metadata["bucket_scheme"]["name"]
                 }
                 batch_results.append(result)
                 tqdm.write(f"[{wiki_entity_id}] Correct: {correct} | Model: {resp.label}")

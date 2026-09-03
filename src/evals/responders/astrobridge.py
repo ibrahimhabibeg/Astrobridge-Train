@@ -28,6 +28,7 @@ def extract_final_answer(response: str, labels_str: str) -> str:
 class AstroBridgeResponder:
     def __init__(self, repo_id: str, device: str):
         self.device = device
+        self.repo_id = repo_id
         self.cfg = load_config("base", "data", "modalities", "model", "stage2")
         print("Building base LLM...")
         llm, self.tokenizer = build_llm(self.cfg)
@@ -53,6 +54,12 @@ class AstroBridgeResponder:
         self.model.eval()
         self.encoders = {name: build_encoder(name, self.cfg.modalities[name], device=self.device) for name in self.cfg.modalities}
         self.max_tokens = {n: int(c.max_tokens) for n, c in self.cfg.modalities.items()}
+
+    def get_config(self) -> dict:
+        return {
+            "type": "AstroBridgeResponder",
+            "repo_id": self.repo_id
+        }
 
     def respond_batch(self, samples: List[EvalSample], scheme: BucketScheme) -> List[ModelResponse]:        
         prompt = build_mcq_prompt(scheme)

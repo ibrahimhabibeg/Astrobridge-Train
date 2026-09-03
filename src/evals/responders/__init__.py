@@ -21,3 +21,9 @@ class Responder(Protocol):
         Given raw spectra samples and a bucket scheme, return predicted labels and raw text.
         """
         ...
+        
+    def get_config(self) -> dict:
+        """
+        Return the configuration/metadata of this responder.
+        """
+        ...

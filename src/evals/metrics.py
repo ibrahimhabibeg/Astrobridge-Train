@@ -70,7 +70,14 @@ def compute_and_save_metrics(results_dir: str, scheme: BucketScheme):
     else:
         weighted_f1 = 0.0
 
+    metadata_path = os.path.join(results_dir, "metadata.json")
+    metadata = {}
+    if os.path.exists(metadata_path):
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+
     metrics = {
+        "metadata": metadata,
         "total_samples": total,
         "format_errors": format_errors,
         "format_error_rate": format_errors / total if total > 0 else 0.0,
