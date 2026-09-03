@@ -30,6 +30,7 @@ dependencies = [
     # install instructions if a specific version turns out to matter.
     "matplotlib>=3.10.9",
     "pillow>=12.3.0",
+    "scikit-learn>=1.7.2",
 ]
 
 [project.optional-dependencies]
