@@ -14,6 +14,7 @@ class EvalSample:
 class ModelResponse:
     label: str
     raw_text: str
+    forced_fallback: bool = False
 
 class Responder(Protocol):
     def respond_batch(self, samples: List[EvalSample], scheme: BucketScheme) -> List[ModelResponse]:

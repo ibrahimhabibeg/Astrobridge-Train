@@ -92,9 +92,40 @@ class BaseQwenTextResponder:
         generated_ids = output_ids[:, input_len:]
         raw_responses = self._processor.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
         
+        labels = [extract_final_answer(r, scheme.labels) for r in raw_responses]
+        failed_indices = [i for i, label in enumerate(labels) if label == "UNKNOWN"]
+        
+        if failed_indices:
+            fallback_texts = []
+            for i in failed_indices:
+                # Append the forced answer prompt to the cut-off reasoning
+                fallback_prompt = texts[i] + raw_responses[i] + "\n\nFINAL ANSWER:"
+                fallback_texts.append(fallback_prompt)
+                
+            fallback_inputs = self._processor.tokenizer(fallback_texts, return_tensors="pt", padding=True)
+            fallback_inputs = {k: v.to(self._device) for k, v in fallback_inputs.items()}
+            
+            with torch.no_grad():
+                fallback_output_ids = self._model.generate(
+                    **fallback_inputs,
+                    max_new_tokens=10, # Just enough tokens for the letter
+                    do_sample=False
+                )
+                
+            fb_input_len = fallback_inputs['input_ids'].shape[1]
+            fb_generated_ids = fallback_output_ids[:, fb_input_len:]
+            fb_raw_responses = self._processor.tokenizer.batch_decode(fb_generated_ids, skip_special_tokens=True)
+            
+            for idx, f_idx in enumerate(failed_indices):
+                new_raw = raw_responses[f_idx] + "\n\nFINAL ANSWER:" + fb_raw_responses[idx]
+                raw_responses[f_idx] = new_raw
+                labels[f_idx] = extract_final_answer(new_raw, scheme.labels)
+        
         return [
             ModelResponse(
-                label=extract_final_answer(r, scheme.labels), 
-                raw_text=r
-            ) for r in raw_responses
+                label=labels[i], 
+                raw_text=raw_responses[i],
+                forced_fallback=(i in failed_indices)
+            ) 
+            for i in range(len(raw_responses))
         ]

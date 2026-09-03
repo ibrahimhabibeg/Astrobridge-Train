@@ -12,8 +12,8 @@ RUN_CONFIG = {
     "responder_type": "base_qwen_text",                    # 'astrobridge', 'base_qwen', or 'base_qwen_text'
     "astrobridge_id": "UniverseTBD/astrobridge-captioner-v3", # The fine-tuned checkpoint
     "base_llm_id": "Qwen/Qwen3.5-9B",                   # The base language model
-    "bucket_scheme": "5-group",                         # '5-group' or '3-group'
-    "batch_size": 64,
+    "bucket_scheme": "3-group",                         # '5-group' or '3-group'
+    "batch_size": 32,
     "gpu": "A100-80GB",                                 # 'A100-80GB' (for astrobridge) or 'A10' (for base)
     "suffix_tag": None,                                 # Leave as None to auto-generate (responder_scheme)
 }
@@ -126,6 +126,7 @@ def run_evaluation(timestamp_dir: str):
                     "correct_answer": correct,
                     "model_answer": resp.label,
                     "full_response": resp.raw_text,
+                    "forced_fallback": resp.forced_fallback,
                     "responder": metadata["responder"]["type"],
                     "scheme": metadata["bucket_scheme"]["name"]
                 }
