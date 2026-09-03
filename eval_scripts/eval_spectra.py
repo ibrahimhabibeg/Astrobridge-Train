@@ -179,9 +179,7 @@ def run_evaluation(repo_id: str, prompt: str, timestamp_dir: str, batch_size: in
     
     with open(f"{output_dir}/prompt.txt", "w") as f:
         f.write(prompt)
-        
-    results = []
-    
+            
     max_tokens = {n: int(c.max_tokens) for n, c in cfg.modalities.items()}
 
     def chunker(seq, size):
