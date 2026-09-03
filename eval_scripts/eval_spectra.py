@@ -1,10 +1,22 @@
-import sys
 import os
-sys.path.insert(0, os.path.join(os.getcwd(), "src"))
 import json
 import modal
 from datetime import datetime
 import subprocess
+
+# ==========================================
+# EVALUATION CONFIGURATION
+# Edit these values before running the script
+# ==========================================
+RUN_CONFIG = {
+    "responder_type": "astrobridge",      # 'astrobridge' or 'base_qwen'
+    "model_id": "UniverseTBD/astrobridge-captioner-v3", 
+    "bucket_scheme": "5-group",           # '5-group' or '3-group'
+    "batch_size": 256,
+    "gpu": "A100-80GB",                   # Modal GPU
+    "suffix_tag": None,                   # Leave as None to auto-generate (responder_scheme)
+}
+# ==========================================
 
 volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
 app = modal.App("astrobridge-evaluation")
@@ -12,14 +24,10 @@ app = modal.App("astrobridge-evaluation")
 def download_models():
     import yaml
     from huggingface_hub import snapshot_download, hf_hub_download
-    
-    repo_id = "UniverseTBD/astrobridge-captioner-v3"
-    snapshot_download(repo_id)
-    hf_hub_download(repo_id=repo_id, filename="middle.pt")
-    
-    llm_name = "Qwen/Qwen3.5-9B"
-    snapshot_download(llm_name)
-    
+    model_id = RUN_CONFIG["model_id"]
+    snapshot_download(model_id)
+    hf_hub_download(repo_id=model_id, filename="middle.pt")
+    snapshot_download("Qwen/Qwen3.5-9B")
     hf_hub_download(
         repo_id="UniverseTBD/AstroBridge-Data",
         filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
@@ -36,12 +44,12 @@ image = (
 )
 
 @app.function(
-    gpu="A100-80GB",
+    gpu=RUN_CONFIG["gpu"],
     image=image,
     timeout=86400,
     volumes={"/outputs": volume},
 )
-def run_evaluation(repo_id: str, timestamp_dir: str, batch_size: int = 4):
+def run_evaluation(timestamp_dir: str):
     import sys
     sys.path.insert(0, "/root/src")
     os.chdir("/root")
@@ -50,21 +58,22 @@ def run_evaluation(repo_id: str, timestamp_dir: str, batch_size: int = 4):
     import torch
     from tqdm import tqdm
     
-    from evals.buckets import five_bucket_scheme
+    from evals.buckets import get_bucket_scheme
     from evals.data import load_test_spectra
-    from evals.responders import EvalSample
-    from evals.responders.astrobridge import AstroBridgeResponder
+    from evals.responders import EvalSample, get_responder
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    scheme = five_bucket_scheme()
-    responder = AstroBridgeResponder(repo_id, device)
+    scheme = get_bucket_scheme(RUN_CONFIG["bucket_scheme"])
+    responder = get_responder(RUN_CONFIG["responder_type"], RUN_CONFIG["model_id"], device)
     
     df_test = load_test_spectra()
+    batch_size = RUN_CONFIG["batch_size"]
     
     output_dir = f"/outputs/{timestamp_dir}"
     os.makedirs(output_dir, exist_ok=True)
     
     metadata = {
+        "run_config": RUN_CONFIG,
         "responder": responder.get_config(),
         "bucket_scheme": scheme.get_config(),
         "batch_size": batch_size
@@ -121,14 +130,18 @@ def run_evaluation(repo_id: str, timestamp_dir: str, batch_size: int = 4):
 
 @app.local_entrypoint()
 def main():
-    repo_id = "UniverseTBD/astrobridge-captioner-v3"
-    timestamp_dir = datetime.now().strftime("%Y%m%d_%H%M%S")
+    suffix = RUN_CONFIG.get("suffix_tag")
+    if not suffix:
+        suffix = f"{RUN_CONFIG['responder_type']}_{RUN_CONFIG['bucket_scheme']}"
+        
+    suffix_str = f"_{suffix}" if suffix else ""
+    timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S{suffix_str}")
     
     local_output_dir = os.path.join(os.getcwd(), "eval_results")
     os.makedirs(local_output_dir, exist_ok=True)
 
     print(f"Starting evaluation. Results will be saved to timestamped dir: {timestamp_dir}")
-    run_evaluation.remote(repo_id, timestamp_dir, batch_size=256)
+    run_evaluation.remote(timestamp_dir)
     
     print("\nEvaluation finished!")
     print(f"Syncing Modal volume to local directory: {local_output_dir}")
@@ -136,11 +149,14 @@ def main():
     subprocess.run(
         ["modal", "volume", "get", "astrobridge-evals", timestamp_dir, local_output_dir],
         check=True
-    )    
+    )
+    
+    import sys
     sys.path.insert(0, os.path.join(os.getcwd(), "src"))
-    from evals.buckets import five_bucket_scheme
+    from evals.buckets import get_bucket_scheme
     from evals.metrics import compute_and_save_metrics
+    
     results_dir = os.path.join(local_output_dir, timestamp_dir)
     print("Done syncing! Computing metrics locally to save GPU time...")
-    compute_and_save_metrics(results_dir, five_bucket_scheme())
+    compute_and_save_metrics(results_dir, get_bucket_scheme(RUN_CONFIG["bucket_scheme"]))
     print(f"All done! Check {results_dir} for results and metrics.")

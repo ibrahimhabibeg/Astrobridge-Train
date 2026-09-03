@@ -27,3 +27,17 @@ class Responder(Protocol):
         Return the configuration/metadata of this responder.
         """
         ...
+
+def get_responder(responder_id: str, model_id: str, device: str) -> Responder:
+    from .astrobridge import AstroBridgeResponder
+    from .base_qwen import BaseQwenResponder
+
+    RESPONDER_REGISTRY = {
+        "astrobridge": AstroBridgeResponder,
+        "base_qwen": BaseQwenResponder,
+    }
+
+    if responder_id not in RESPONDER_REGISTRY:
+        raise ValueError(f"Unknown responder '{responder_id}'. Available: {list(RESPONDER_REGISTRY.keys())}")
+    
+    return RESPONDER_REGISTRY[responder_id](model_id, device)

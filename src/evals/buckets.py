@@ -65,3 +65,13 @@ def three_bucket_scheme() -> BucketScheme:
             "intermediate or far (z >= 0.5)"
         ]
     )
+
+SCHEME_REGISTRY = {
+    "5-group": five_bucket_scheme,
+    "3-group": three_bucket_scheme,
+}
+
+def get_bucket_scheme(scheme_id: str) -> BucketScheme:
+    if scheme_id not in SCHEME_REGISTRY:
+        raise ValueError(f"Unknown bucket scheme '{scheme_id}'. Available: {list(SCHEME_REGISTRY.keys())}")
+    return SCHEME_REGISTRY[scheme_id]()
