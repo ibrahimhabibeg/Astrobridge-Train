@@ -2,29 +2,10 @@ import io
 import re
 from typing import List
 from . import EvalSample, BucketScheme, ModelResponse
+from .utils import render_spectrum_plot
 from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
 import torch
 from PIL import Image
-import matplotlib.pyplot as plt
-
-def render_spectrum_plot(wavelength, flux, mask=None, survey=None):
-    fig, ax = plt.subplots(figsize=(10, 4))
-    
-    if mask is not None:
-        valid = ~mask
-        ax.plot(wavelength[valid], flux[valid], color='blue', lw=1, label='Valid')
-        ax.plot(wavelength[mask], flux[mask], color='red', lw=1, alpha=0.5, label='Masked')
-    else:
-        ax.plot(wavelength, flux, color='blue', lw=1)
-        
-    ax.set_xlabel('Wavelength (Å)')
-    ax.set_ylabel('Flux')
-    ax.set_title('Spectrum')
-    
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight')
-    plt.close(fig)
-    return buf.getvalue()
 
 def build_mcq_prompt(scheme: BucketScheme) -> str:
     prompt = (
@@ -40,8 +21,9 @@ def extract_final_answer(response: str, labels: List[str]) -> str:
     return "UNKNOWN"
 
 class BaseQwenResponder:
-    def __init__(self, astrobridge_id: str, base_llm_id: str, device: str):
-        self._model_id = base_llm_id
+    def __init__(self, config: dict, device: str):
+        assert "base_llm_id" in config and config["base_llm_id"], "Missing 'base_llm_id' in config"
+        self._model_id = config["base_llm_id"]
         self._device = device
         self._processor = AutoProcessor.from_pretrained(self._model_id, trust_remote_code=True)
         self._model = Qwen3_5ForConditionalGeneration.from_pretrained(

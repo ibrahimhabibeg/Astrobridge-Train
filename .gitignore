@@ -6,3 +6,4 @@ outputs/
 .venv/
 venv/
 eval_results/
+.env

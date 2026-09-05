@@ -34,8 +34,9 @@ def extract_final_answer(response: str, labels: List[str]) -> str:
     return "UNKNOWN"
 
 class BaseQwenTextResponder:
-    def __init__(self, astrobridge_id: str, base_llm_id: str, device: str):
-        self._model_id = base_llm_id
+    def __init__(self, config: dict, device: str):
+        assert "base_llm_id" in config and config["base_llm_id"], "Missing 'base_llm_id' in config"
+        self._model_id = config["base_llm_id"]
         self._device = device
         self._processor = AutoProcessor.from_pretrained(self._model_id, trust_remote_code=True)
         self._model = Qwen3_5ForConditionalGeneration.from_pretrained(

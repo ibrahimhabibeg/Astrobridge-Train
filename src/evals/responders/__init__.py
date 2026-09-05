@@ -29,19 +29,22 @@ class Responder(Protocol):
         """
         ...
 
-def get_responder(responder_id: str, astrobridge_id: str, base_llm_id: str, device: str) -> Responder:
+def get_responder(config: dict, device: str) -> Responder:
     # Import inside the factory to avoid circular imports during initialization
     from .astrobridge import AstroBridgeResponder
     from .base_qwen import BaseQwenResponder
     from .base_qwen_text import BaseQwenTextResponder
+    from .gemini import GeminiResponder
 
     RESPONDER_REGISTRY = {
         "astrobridge": AstroBridgeResponder,
         "base_qwen": BaseQwenResponder,
         "base_qwen_text": BaseQwenTextResponder,
+        "gemini": GeminiResponder,
     }
 
+    responder_id = config.get("responder_type")
     if responder_id not in RESPONDER_REGISTRY:
         raise ValueError(f"Unknown responder '{responder_id}'. Available: {list(RESPONDER_REGISTRY.keys())}")
     
-    return RESPONDER_REGISTRY[responder_id](astrobridge_id, base_llm_id, device)
+    return RESPONDER_REGISTRY[responder_id](config, device)

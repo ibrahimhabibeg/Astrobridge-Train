@@ -26,9 +26,10 @@ def extract_final_answer(response: str, labels_str: str) -> str:
     return "UNKNOWN"
 
 class AstroBridgeResponder:
-    def __init__(self, astrobridge_id: str, base_llm_id: str, device: str):
+    def __init__(self, config: dict, device: str):
+        assert "astrobridge_id" in config and config["astrobridge_id"], "Missing 'astrobridge_id' in config"
         self.device = device
-        self.repo_id = astrobridge_id
+        self.repo_id = config["astrobridge_id"]
         self.cfg = load_config("base", "data", "modalities", "model", "stage2")
         print("Building base LLM...")
         llm, self.tokenizer = build_llm(self.cfg)

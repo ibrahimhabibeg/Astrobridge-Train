@@ -31,6 +31,8 @@ dependencies = [
     "matplotlib>=3.10.9",
     "pillow>=12.3.0",
     "scikit-learn>=1.7.2",
+    "google-genai>=2.22.0",
+    "python-dotenv>=1.2.3",
 ]
 
 [project.optional-dependencies]
