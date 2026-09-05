@@ -9,11 +9,11 @@ import subprocess
 # Edit these values before running the script
 # ==========================================
 RUN_CONFIG = {
-    "responder_type": "base_qwen_text",                    # 'astrobridge', 'base_qwen', or 'base_qwen_text'
+    "responder_type": "base_qwen",                    # 'astrobridge', 'base_qwen', or 'base_qwen_text'
     "astrobridge_id": "UniverseTBD/astrobridge-captioner-v3", # The fine-tuned checkpoint
     "base_llm_id": "Qwen/Qwen3.5-9B",                   # The base language model
     "bucket_scheme": "3-group",                         # '5-group' or '3-group'
-    "batch_size": 32,
+    "batch_size": 16,
     "gpu": "A100-80GB",                                 # 'A100-80GB' (for astrobridge) or 'A10' (for base)
     "suffix_tag": None,                                 # Leave as None to auto-generate (responder_scheme)
 }
@@ -23,11 +23,10 @@ volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
 app = modal.App("astrobridge-evaluation")
 
 def download_models():
-    import yaml
     from huggingface_hub import snapshot_download, hf_hub_download
     
-    astrobridge_id = RUN_CONFIG["astrobridge_id"]
-    base_llm_id = RUN_CONFIG["base_llm_id"]
+    astrobridge_id = "UniverseTBD/astrobridge-captioner-v3"
+    base_llm_id = "Qwen/Qwen3.5-9B"
     
     print(f"Downloading AstroBridge extra weights: {astrobridge_id}")
     snapshot_download(astrobridge_id)
