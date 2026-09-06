@@ -1,343 +1,186 @@
 import os
 import json
-from typing import Any, Dict, List, Set
+import pandas as pd
+import numpy as np
+from typing import Any
+from sklearn.metrics import accuracy_score, mean_absolute_error, classification_report, confusion_matrix
+from sklearn.preprocessing import MultiLabelBinarizer
 from .buckets import BucketScheme
 
 def compute_and_save_metrics(results_dir: str, task_or_scheme: Any):
-    """
-    Dispatcher to compute and save metrics based on task or bucket scheme.
-    """
     if hasattr(task_or_scheme, "name") and task_or_scheme.name == "emission_lines":
         _compute_emission_line_metrics(results_dir, task_or_scheme)
     else:
-        # Distance classification task or legacy BucketScheme
         scheme = getattr(task_or_scheme, "scheme", task_or_scheme)
         _compute_classification_metrics(results_dir, scheme)
 
+def _load_metadata(results_dir: str) -> dict:
+    path = os.path.join(results_dir, "metadata.json")
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return {}
+
 def _compute_classification_metrics(results_dir: str, scheme: BucketScheme):
     results_path = os.path.join(results_dir, "results.jsonl")
-    if not os.path.exists(results_path):
-        print(f"No results.jsonl found in {results_dir}")
-        return
+    if not os.path.exists(results_path): return
         
-    y_true = []
-    y_pred = []
-    format_errors = 0
-    total = 0
+    df = pd.read_json(results_path, lines=True)
+    if df.empty: return
+        
+    df["pred"] = df.get("model_answer", df.get("parsed", "UNKNOWN")).fillna("UNKNOWN")
     
-    label_map = {label: i+1 for i, label in enumerate(scheme.labels)}
-    labels_str = "".join(scheme.labels)
+    valid_mask = df["pred"].isin(scheme.labels)
+    format_errors = len(df) - valid_mask.sum()
+    df_valid = df[valid_mask]
     
-    with open(results_path, "r") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            data = json.loads(line)
-            total += 1
-            true_label = data["correct_answer"]
-            pred_label = data.get("model_answer", data.get("parsed", "UNKNOWN"))
-            
-            if pred_label == "UNKNOWN" or pred_label not in label_map:
-                format_errors += 1
-                continue
-                
-            y_true.append(true_label)
-            y_pred.append(pred_label)
-            
-    if not y_true and format_errors == 0:
-        print("No valid predictions to compute metrics on.")
-        return
-
-    correct = sum(1 for t, p in zip(y_true, y_pred) if t == p)
-    accuracy = correct / total if total > 0 else 0.0
+    if df_valid.empty: return
+        
+    y_true, y_pred = df_valid["correct_answer"], df_valid["pred"]
     
-    mae = sum(abs(label_map[t] - label_map[p]) for t, p in zip(y_true, y_pred)) / len(y_true) if y_true else 0.0
+    acc = accuracy_score(y_true, y_pred)
+    report = classification_report(y_true, y_pred, labels=scheme.labels, output_dict=True, zero_division=0)
     
-    cm = {t: {p: 0 for p in labels_str} for t in labels_str}
-    for t, p in zip(y_true, y_pred):
-        cm[t][p] += 1
-        
-    per_class_metrics = {}
-    for t in labels_str:
-        row_total = sum(cm[t].values())
-        recall = cm[t][t] / row_total if row_total > 0 else 0.0
-        
-        col_total = sum(cm[p][t] for p in labels_str)
-        precision = cm[t][t] / col_total if col_total > 0 else 0.0
-        
-        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-        
-        per_class_metrics[t] = {
-            "support": row_total,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1
-        }
-        
-    macro_f1 = sum(m["f1"] for m in per_class_metrics.values()) / float(len(labels_str))
+    label_map = {label: i for i, label in enumerate(scheme.labels)}
+    mae = mean_absolute_error(y_true.map(label_map), y_pred.map(label_map))
     
-    total_valid = sum(m["support"] for m in per_class_metrics.values())
-    if total_valid > 0:
-        weighted_f1 = sum(m["f1"] * m["support"] for m in per_class_metrics.values()) / total_valid
-    else:
-        weighted_f1 = 0.0
-
-    metadata_path = os.path.join(results_dir, "metadata.json")
-    metadata = {}
-    if os.path.exists(metadata_path):
-        with open(metadata_path, "r") as f:
-            metadata = json.load(f)
+    cm = confusion_matrix(y_true, y_pred, labels=scheme.labels)
+    cm_dict = {t: {p: int(cm[i][j]) for j, p in enumerate(scheme.labels)} for i, t in enumerate(scheme.labels)}
+    
+    per_class = {}
+    for label in scheme.labels:
+        per_class[label] = report[label]
+        per_class[label]["f1"] = per_class[label].pop("f1-score", 0.0)
 
     metrics = {
-        "metadata": metadata,
-        "total_samples": total,
-        "format_errors": format_errors,
-        "format_error_rate": format_errors / total if total > 0 else 0.0,
-        "global_accuracy": accuracy,
+        "metadata": _load_metadata(results_dir),
+        "total_samples": len(df),
+        "format_errors": int(format_errors),
+        "format_error_rate": float(format_errors / len(df)),
+        "global_accuracy": acc,
         "mean_absolute_error": mae,
-        "macro_f1": macro_f1,
-        "weighted_f1": weighted_f1,
-        "confusion_matrix": cm,
-        "per_class_metrics": per_class_metrics
+        "macro_f1": report["macro avg"]["f1-score"],
+        "weighted_f1": report["weighted avg"]["f1-score"],
+        "confusion_matrix": cm_dict,
+        "per_class_metrics": per_class
     }
     
-    print("\n=== Evaluation Metrics ===")
-    print(f"Total Samples: {total}")
-    print(f"Format Errors (UNKNOWN): {format_errors} ({(metrics['format_error_rate'])*100:.1f}%)")
-    print(f"Global Accuracy: {accuracy*100:.2f}% ({correct}/{total})")
-    print(f"Mean Absolute Error (Ordinal off-by-X): {mae:.3f} classes")
-    print(f"Macro F1: {macro_f1:.4f}")
-    print(f"Weighted F1: {weighted_f1:.4f}")
+    print(f"\n=== Classification Metrics ===")
+    print(f"Total Samples: {len(df)} | Format Errors: {format_errors}")
+    print(f"Accuracy: {acc*100:.1f}% | MAE: {mae:.3f} classes | Macro F1: {metrics['macro_f1']:.3f}")
     
-    print("\n--- Confusion Matrix ---")
-    print("         Predicted")
-    print("       " + "   ".join(list(labels_str)))
-    for t in labels_str:
-        row = [f"{cm[t][p]:3d}" for p in labels_str]
-        print(f"True {t} " + " ".join(row))
-        
-    print("\n--- Per-Class Metrics ---")
-    for t in labels_str:
-        m = per_class_metrics[t]
-        print(f"{t}: Precision: {m['precision']:.4f}, Recall: {m['recall']:.4f}, F1: {m['f1']:.4f} (Support: {m['support']})")
-            
-    metrics_path = os.path.join(results_dir, "metrics.json")
-    with open(metrics_path, "w") as f:
+    with open(os.path.join(results_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=4)
 
 def _compute_emission_line_metrics(results_dir: str, task: Any):
     results_path = os.path.join(results_dir, "results.jsonl")
-    if not os.path.exists(results_path):
-        print(f"No results.jsonl found in {results_dir}")
-        return
+    if not os.path.exists(results_path): return
 
-    canonical_lines = getattr(task, "canonical_lines", [])
+    df = pd.read_json(results_path, lines=True)
+    if df.empty: return
 
-    total = 0
-    format_errors = 0
-    sample_precisions: List[float] = []
-    sample_recalls: List[float] = []
-    sample_f1s: List[float] = []
-    sample_weighted_recalls: List[float] = []
-    sample_weighted_f1s: List[float] = []
-    exact_matches = 0
+    # Standardize columns
+    df["gt"] = df.get("ground_truth_lines", pd.Series([{}])).apply(lambda x: x if isinstance(x, dict) else {})
+    df["pred"] = df.get("predicted_lines", df.get("parsed", pd.Series([[]]))).apply(lambda x: x if isinstance(x, list) else [])
+    
+    df["gt_set"] = df["gt"].apply(set)
+    df["pred_set"] = df["pred"].apply(set)
+    df["tp_set"] = [g & p for g, p in zip(df["gt_set"], df["pred_set"])]
 
-    total_tp = 0
-    total_pred = 0
-    total_truth = 0
-    total_detected_snr = 0.0
-    total_truth_snr = 0.0
+    # Format errors
+    has_raw = df.get("raw_response", pd.Series([""]*len(df))).fillna("")
+    is_none = has_raw.str.upper().str.contains("NONE")
+    format_errors = int(((df["pred_set"].apply(len) == 0) & ~is_none & (has_raw != "")).sum())
 
-    # Per-line tracking
-    line_stats: Dict[str, Dict[str, Any]] = {
-        line: {
-            "support": 0,
-            "tp": 0,
-            "fp": 0,
-            "fn": 0,
-            "snrs": [],
-            "detected_snrs": [],
-        }
-        for line in canonical_lines
-    }
+    # Sample-level stats
+    df["len_tp"] = df["tp_set"].apply(len)
+    df["len_gt"] = df["gt_set"].apply(len)
+    df["len_pred"] = df["pred_set"].apply(len)
+    
+    df["gt_snr"] = [sum(np.log1p(g.get(l, 0)) for l in g) for g in df["gt"]]
+    df["tp_snr"] = [sum(np.log1p(g.get(l, 0)) for l in tp) for g, tp in zip(df["gt"], df["tp_set"])]
 
-    with open(results_path, "r") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            data = json.loads(line)
-            total += 1
+    # Safe division helpers
+    def safe_div(num, den, empty_cond=None):
+        res = num / den.replace(0, np.nan)
+        if empty_cond is not None:
+            res = np.where((den == 0) & empty_cond, 1.0, res)
+        return pd.Series(res).fillna(0.0)
 
-            gt_dict: Dict[str, float] = data.get("ground_truth_lines", {})
-            pred_list: List[str] = data.get("predicted_lines", data.get("parsed", []))
-            if pred_list is None:
-                pred_list = []
+    df["p"] = safe_div(df["len_tp"], df["len_pred"], df["len_gt"] == 0)
+    df["r"] = safe_div(df["len_tp"], df["len_gt"], df["len_pred"] == 0)
+    df["f1"] = safe_div(2 * df["p"] * df["r"], df["p"] + df["r"])
+    
+    df["rw"] = safe_div(df["tp_snr"], df["gt_snr"], df["len_pred"] == 0)
+    df["f1w"] = safe_div(2 * df["p"] * df["rw"], df["p"] + df["rw"])
+    
+    means = df[["p", "r", "f1", "rw", "f1w"]].mean().to_dict()
+    
+    # Micro metrics
+    tot = df[["len_tp", "len_pred", "len_gt", "tp_snr", "gt_snr"]].sum()
+    mic_p = tot["len_tp"] / tot["len_pred"] if tot["len_pred"] > 0 else 0.0
+    mic_r = tot["len_tp"] / tot["len_gt"] if tot["len_gt"] > 0 else 0.0
+    mic_f1 = 2 * mic_p * mic_r / (mic_p + mic_r) if (mic_p + mic_r) > 0 else 0.0
+    mic_rw = tot["tp_snr"] / tot["gt_snr"] if tot["gt_snr"] > 0 else 0.0
+    mic_f1w = 2 * mic_p * mic_rw / (mic_p + mic_rw) if (mic_p + mic_rw) > 0 else 0.0
 
-            # Check format error
-            if "raw_response" in data and data["raw_response"] and not pred_list and "NONE" not in data["raw_response"].upper():
-                format_errors += 1
-
-            gt_set: Set[str] = set(gt_dict.keys())
-            pred_set: Set[str] = set(pred_list)
-
-            tp_set = gt_set & pred_set
-            fp_set = pred_set - gt_set
-            fn_set = gt_set - pred_set
-
-            # Sample level unweighted precision & recall
-            if len(pred_set) > 0:
-                p = len(tp_set) / len(pred_set)
-            else:
-                p = 1.0 if len(gt_set) == 0 else 0.0
-
-            if len(gt_set) > 0:
-                r = len(tp_set) / len(gt_set)
-            else:
-                r = 1.0 if len(pred_set) == 0 else 0.0
-
-            f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-
-            # Sample level SNR-weighted recall & F1
-            sample_truth_snr = sum(gt_dict[line] for line in gt_set)
-            sample_detected_snr = sum(gt_dict[line] for line in tp_set)
-
-            if sample_truth_snr > 0:
-                r_weighted = sample_detected_snr / sample_truth_snr
-            else:
-                r_weighted = 1.0 if len(pred_set) == 0 else 0.0
-
-            f1_weighted = 2 * p * r_weighted / (p + r_weighted) if (p + r_weighted) > 0 else 0.0
-
-            sample_precisions.append(p)
-            sample_recalls.append(r)
-            sample_f1s.append(f1)
-            sample_weighted_recalls.append(r_weighted)
-            sample_weighted_f1s.append(f1_weighted)
-
-            if gt_set == pred_set:
-                exact_matches += 1
-
-            total_tp += len(tp_set)
-            total_pred += len(pred_set)
-            total_truth += len(gt_set)
-            total_detected_snr += sample_detected_snr
-            total_truth_snr += sample_truth_snr
-
-            # Track per-line
-            for line_name in canonical_lines:
-                stats = line_stats[line_name]
-                in_gt = line_name in gt_set
-                in_pred = line_name in pred_set
-
-                if in_gt:
-                    stats["support"] += 1
-                    snr_val = gt_dict[line_name]
-                    stats["snrs"].append(snr_val)
-                    if in_pred:
-                        stats["tp"] += 1
-                        stats["detected_snrs"].append(snr_val)
-                    else:
-                        stats["fn"] += 1
-                else:
-                    if in_pred:
-                        stats["fp"] += 1
-
-    if total == 0:
-        print("No valid results found in results.jsonl")
-        return
-
-    # Aggregate metrics
-    mean_precision = sum(sample_precisions) / total
-    mean_recall = sum(sample_recalls) / total
-    mean_f1 = sum(sample_f1s) / total
-    mean_weighted_recall = sum(sample_weighted_recalls) / total
-    mean_weighted_f1 = sum(sample_weighted_f1s) / total
-    exact_match_rate = exact_matches / total
-
-    micro_precision = total_tp / total_pred if total_pred > 0 else 0.0
-    micro_recall = total_tp / total_truth if total_truth > 0 else 0.0
-    micro_f1 = 2 * micro_precision * micro_recall / (micro_precision + micro_recall) if (micro_precision + micro_recall) > 0 else 0.0
-    micro_weighted_recall = total_detected_snr / total_truth_snr if total_truth_snr > 0 else 0.0
-    micro_weighted_f1 = 2 * micro_precision * micro_weighted_recall / (micro_precision + micro_weighted_recall) if (micro_precision + micro_weighted_recall) > 0 else 0.0
-
-    # Per-line calculations
+    # Per-line metrics
+    lines = getattr(task, "canonical_lines", [])
+    mlb = MultiLabelBinarizer(classes=lines)
+    mlb.fit(df["gt_set"])
+    yt = mlb.transform(df["gt_set"])
+    yp = mlb.transform(df["pred_set"])
+    
+    report = classification_report(yt, yp, target_names=lines, output_dict=True, zero_division=0)
+    
     per_line_metrics = {}
-    for line_name, stats in line_stats.items():
-        tp = stats["tp"]
-        fp = stats["fp"]
-        fn = stats["fn"]
-        support = stats["support"]
-        p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-        mean_snr = sum(stats["snrs"]) / support if support > 0 else 0.0
-        detected_mean_snr = sum(stats["detected_snrs"]) / tp if tp > 0 else 0.0
+    for i, line in enumerate(lines):
+        t_mask = yt[:, i] == 1
+        p_mask = yp[:, i] == 1
+        
+        snrs = df.loc[t_mask, "gt"].apply(lambda d: d.get(line, 0))
+        det_snrs = df.loc[t_mask & p_mask, "gt"].apply(lambda d: d.get(line, 0))
+        
+        report[line].update({
+            "f1": report[line].pop("f1-score"),
+            "mean_snr": float(snrs.mean()) if not snrs.empty else 0.0,
+            "mean_detected_snr": float(det_snrs.mean()) if not det_snrs.empty else 0.0,
+            "tp": int((t_mask & p_mask).sum()),
+            "fp": int((~t_mask & p_mask).sum()),
+            "fn": int((t_mask & ~p_mask).sum()),
+            "support": int(t_mask.sum())
+        })
+        per_line_metrics[line] = report[line]
 
-        per_line_metrics[line_name] = {
-            "support": support,
-            "tp": tp,
-            "fp": fp,
-            "fn": fn,
-            "precision": p,
-            "recall": r,
-            "f1": f1,
-            "mean_snr": round(mean_snr, 2),
-            "mean_detected_snr": round(detected_mean_snr, 2),
-        }
-
-    metadata_path = os.path.join(results_dir, "metadata.json")
-    metadata = {}
-    if os.path.exists(metadata_path):
-        with open(metadata_path, "r") as f:
-            metadata = json.load(f)
-
+    exact_matches = int((df["gt_set"] == df["pred_set"]).sum())
+    
     metrics = {
-        "metadata": metadata,
-        "total_samples": total,
+        "metadata": _load_metadata(results_dir),
+        "total_samples": len(df),
         "exact_matches": exact_matches,
-        "exact_match_rate": exact_match_rate,
+        "exact_match_rate": exact_matches / len(df),
         "format_errors": format_errors,
         "sample_level": {
-            "mean_precision": mean_precision,
-            "mean_recall": mean_recall,
-            "mean_f1": mean_f1,
-            "mean_snr_weighted_recall": mean_weighted_recall,
-            "mean_snr_weighted_f1": mean_weighted_f1,
+            "mean_precision": means["p"],
+            "mean_recall": means["r"],
+            "mean_f1": means["f1"],
+            "mean_snr_weighted_recall": means["rw"],
+            "mean_snr_weighted_f1": means["f1w"],
         },
         "dataset_micro_level": {
-            "micro_precision": micro_precision,
-            "micro_recall": micro_recall,
-            "micro_f1": micro_f1,
-            "micro_snr_weighted_recall": micro_weighted_recall,
-            "micro_snr_weighted_f1": micro_weighted_f1,
+            "micro_precision": mic_p,
+            "micro_recall": mic_r,
+            "micro_f1": mic_f1,
+            "micro_snr_weighted_recall": mic_rw,
+            "micro_snr_weighted_f1": mic_f1w,
         },
         "per_line_metrics": per_line_metrics,
     }
-
-    print("\n=== Emission Line Evaluation Metrics ===")
-    print(f"Total Samples: {total}")
-    print(f"Exact Match Rate: {exact_match_rate * 100:.2f}% ({exact_matches}/{total})")
-    print(f"Format Errors: {format_errors} ({format_errors / total * 100:.1f}%)")
-    print("\n--- Sample-Level Averages ---")
-    print(f"Mean Precision:               {mean_precision * 100:.2f}%")
-    print(f"Mean Recall:                  {mean_recall * 100:.2f}%")
-    print(f"Mean F1:                      {mean_f1:.4f}")
-    print(f"Mean SNR-Weighted Recall:     {mean_weighted_recall * 100:.2f}%")
-    print(f"Mean SNR-Weighted F1:         {mean_weighted_f1:.4f}")
-    print("\n--- Micro-Averaged Totals ---")
-    print(f"Micro Precision:              {micro_precision * 100:.2f}%")
-    print(f"Micro Recall:                 {micro_recall * 100:.2f}%")
-    print(f"Micro SNR-Weighted Recall:    {micro_weighted_recall * 100:.2f}%")
-    print(f"Micro SNR-Weighted F1:        {micro_weighted_f1:.4f}")
-
-    print("\n--- Per-Line Performance (Top active lines) ---")
-    print(f"{'Line':16s} | {'Supp':>4s} | {'SNR':>5s} | {'Prec':>6s} | {'Rec':>6s} | {'F1':>6s}")
-    print("-" * 55)
-    sorted_lines = sorted(per_line_metrics.items(), key=lambda item: item[1]["support"], reverse=True)
-    for line_name, m in sorted_lines:
-        if m["support"] > 0 or (m["tp"] + m["fp"]) > 0:
-            print(f"{line_name:16s} | {m['support']:4d} | {m['mean_snr']:5.1f} | {m['precision']*100:5.1f}% | {m['recall']*100:5.1f}% | {m['f1']:6.3f}")
-
-    metrics_path = os.path.join(results_dir, "metrics.json")
-    with open(metrics_path, "w") as f:
+    
+    print(f"\n=== Emission Line Metrics ===")
+    print(f"Samples: {len(df)} | Exact Match: {exact_matches/len(df)*100:.1f}% | Format Errors: {format_errors}")
+    print(f"Sample Means -> Prec: {means['p']*100:.1f}% | Rec: {means['r']*100:.1f}% | F1: {means['f1']:.3f} | SNR-F1: {means['f1w']:.3f}")
+    print(f"Micro Totals -> Prec: {mic_p*100:.1f}% | Rec: {mic_r*100:.1f}% | F1: {mic_f1:.3f} | SNR-F1: {mic_f1w:.3f}")
+    
+    with open(os.path.join(results_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=4)
