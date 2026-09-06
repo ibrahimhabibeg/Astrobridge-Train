@@ -10,22 +10,22 @@ import dotenv
 # Edit these values before running the script
 # ==========================================
 RUN_CONFIG = {
-    "responder_type": "gemini",                         # 'astrobridge', 'base_qwen', 'base_qwen_text', or 'gemini'
+    "responder_type": "base_qwen_text",                         # 'astrobridge', 'base_qwen', 'base_qwen_text', or 'gemini'
     "astrobridge_id": "UniverseTBD/astrobridge-model-v3_qwen", # The fine-tuned checkpoint
     "base_llm_id": "Qwen/Qwen3.5-9B",                   # The base language model
     "gemini_model": "gemini-3.7-flash",
     "gemini_num_workers": 4, 
     "gemini_max_output_tokens": 4096,
     "gemini_temperature": 1.0,                          # Set to 0.0 for greedy decoding (deterministic)
-    "bucket_scheme": "3-group",                         # '5-group' or '3-group'
-    "batch_size": 16,
+    "batch_size": 64,
     "gpu": "A100-80GB",                                 # 'A100-80GB' (for astrobridge) or 'A10' (for base)
-    "suffix_tag": None,                                 # Leave as None to auto-generate (responder_scheme)
+    "limit": None,                                      # Set to an int (e.g. 5) to test on a subset, or None for full test set
+    "suffix_tag": None,                                 # Leave as None to auto-generate (responder_lines)
 }
 # ==========================================
 
 volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
-app = modal.App("astrobridge-evaluation")
+app = modal.App("astrobridge-emission-lines-evaluation")
 
 def download_models():
     from huggingface_hub import snapshot_download, hf_hub_download
@@ -41,10 +41,15 @@ def download_models():
     snapshot_download(base_llm_id)
         
     # Dataset
-    print("Downloading evaluation dataset...")
+    print("Downloading evaluation datasets...")
     hf_hub_download(
         repo_id="UniverseTBD/AstroBridge-Data",
         filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
+        repo_type="dataset"
+    )
+    hf_hub_download(
+        repo_id="UniverseTBD/AstroBridge-Data",
+        filename="observations/spectra/extracted_emission_lines.csv",
         repo_type="dataset"
     )
 
@@ -63,16 +68,17 @@ def run_evaluation_core(timestamp_dir: str, output_base_dir: str):
     from tqdm import tqdm
     
     from evals.tasks import get_task
-    from evals.data import load_test_spectra
+    from evals.data import load_test_spectra_emission_lines
     from evals.responders import EvalSample, get_responder
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    task = get_task("distance_classification", scheme=RUN_CONFIG["bucket_scheme"])
-    
+    task = get_task("emission_lines")
     responder = get_responder(RUN_CONFIG, device)
     
-    df_test = load_test_spectra()
-    # df_test = df_test.head(5)
+    df_test = load_test_spectra_emission_lines()
+    if RUN_CONFIG.get("limit") is not None:
+        print(f"Limiting evaluation to first {RUN_CONFIG['limit']} samples.")
+        df_test = df_test.head(RUN_CONFIG["limit"])
     batch_size = RUN_CONFIG["batch_size"]
     
     output_dir = os.path.join(output_base_dir, timestamp_dir)
@@ -90,10 +96,9 @@ def run_evaluation_core(timestamp_dir: str, output_base_dir: str):
     def chunker(seq, size):
         return (seq[pos:pos + size] for pos in range(0, len(seq), size))
         
-    for batch_df in tqdm(list(chunker(df_test, batch_size)), desc="Evaluating"):
+    for batch_df in tqdm(list(chunker(df_test, batch_size)), desc="Evaluating Emission Lines"):
         wiki_entity_ids = batch_df['wiki_entity_id'].tolist()
-        z_values = batch_df['Z'].tolist()
-        correct_answers = [task.extract_ground_truth(z) for z in z_values]
+        ground_truths = [task.extract_ground_truth(row) for _, row in batch_df.iterrows()]
         surveys = batch_df['survey'].tolist() if 'survey' in batch_df.columns else ["sdss"] * len(batch_df)
         
         samples = []
@@ -109,19 +114,19 @@ def run_evaluation_core(timestamp_dir: str, output_base_dir: str):
             answers = responder.respond_batch(samples, task)
             batch_results = []
             
-            for wiki_entity_id, z_value, correct, resp in zip(wiki_entity_ids, z_values, correct_answers, answers):
+            for wiki_entity_id, gt, resp in zip(wiki_entity_ids, ground_truths, answers):
                 result = {
                     "wiki_entity_id": wiki_entity_id,
-                    "Z": z_value,
-                    "correct_answer": correct,
-                    "model_answer": resp.label,
-                    "full_response": resp.raw_text,
+                    "ground_truth_lines": gt,
+                    "predicted_lines": resp.parsed,
+                    "raw_response": resp.raw_text,
                     "forced_fallback": getattr(resp, 'forced_fallback', False),
                     "responder": metadata["responder"]["type"],
-                    "scheme": metadata["task"]["bucket_scheme"]["name"]
+                    "task": metadata["task"]["task_name"]
                 }
                 batch_results.append(result)
-                tqdm.write(f"[{wiki_entity_id}] Correct: {correct} | Model: {resp.label}")
+                gt_keys = list(gt.keys())
+                tqdm.write(f"[{wiki_entity_id}] Truth: {gt_keys} | Pred: {resp.parsed}")
             
             with open(os.path.join(output_dir, "results.jsonl"), "a") as f:
                 for res in batch_results:
@@ -154,7 +159,7 @@ def run_evaluation_remote(timestamp_dir: str):
 def main():
     suffix = RUN_CONFIG.get("suffix_tag")
     if not suffix:
-        suffix = f"{RUN_CONFIG['responder_type']}_{RUN_CONFIG['bucket_scheme']}"
+        suffix = f"{RUN_CONFIG['responder_type']}_lines"
         
     suffix_str = f"_{suffix}" if suffix else ""
     timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S{suffix_str}")
@@ -165,7 +170,7 @@ def main():
     import sys
     sys.path.insert(0, os.path.join(os.getcwd(), "src"))
 
-    print(f"Starting evaluation. Results will be saved to timestamped dir: {timestamp_dir}")
+    print(f"Starting emission line evaluation. Results will be saved to timestamped dir: {timestamp_dir}")
     
     if RUN_CONFIG["responder_type"] == "gemini":
         print("Running Gemini evaluator LOCALLY (bypassing Modal GPU).")
@@ -187,13 +192,13 @@ def main():
     from evals.metrics import compute_and_save_metrics
     
     print("Done generating results! Computing metrics locally...")
-    task = get_task("distance_classification", scheme=RUN_CONFIG["bucket_scheme"])
+    task = get_task("emission_lines")
     compute_and_save_metrics(results_dir, task)
     print(f"All done! Check {results_dir} for results and metrics.")
 
-# If someone runs `python eval_spectra.py` directly without `modal run`
 if __name__ == "__main__":
     if RUN_CONFIG["responder_type"] == "gemini":
         main()
     else:
-        print("Please use `modal run eval_scripts/eval_spectra.py` to run on Modal GPUs.")
+        print("Please use `modal run eval_scripts/eval_emission_lines.py` to run on Modal GPUs.")
+

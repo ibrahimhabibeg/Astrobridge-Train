@@ -1,6 +1,7 @@
-import re
-from typing import List
-from . import EvalSample, BucketScheme, ModelResponse
+from typing import List, Any
+from . import EvalSample, ModelResponse
+from ..tasks.distance_classification import DistanceClassPromptSpec, DistanceClassificationTask
+from ..tasks.emission_lines import EmissionLinePromptSpec
 import torch
 from huggingface_hub import hf_hub_download
 from peft import PeftModel
@@ -10,20 +11,6 @@ from captioner.encoders.registry import build_encoder
 from captioner.model.captioner import Captioner, FusionStack
 from captioner.train.stage1 import build_llm, get_llm_hidden_size
 from captioner.utils.prompt import human_readable_subset
-
-def build_mcq_prompt(scheme: BucketScheme) -> str:
-    prompt = (
-        "Based on the spectrum provided, classify the distance of the observed astronomical object into one of the following categories: "
-        f"{scheme.format_options()}. "
-        "Think step-by-step, but you MUST conclude with the exact phrase 'FINAL ANSWER: [Letter]'"
-    )
-    return prompt
-
-def extract_final_answer(response: str, labels_str: str) -> str:
-    match = re.search(r"FINAL ANSWER:\s*([" + labels_str + r"])", response)
-    if match:
-        return match.group(1)
-    return "UNKNOWN"
 
 class AstroBridgeResponder:
     def __init__(self, config: dict, device: str):
@@ -62,10 +49,38 @@ class AstroBridgeResponder:
             "repo_id": self.repo_id
         }
 
-    def respond_batch(self, samples: List[EvalSample], scheme: BucketScheme) -> List[ModelResponse]:        
-        prompt = build_mcq_prompt(scheme)
-        raw_inputs_list = []
+    def _build_distance_prompt(self, spec: DistanceClassPromptSpec) -> str:
+        return (
+            "Based on the spectrum provided, classify the distance of the observed astronomical object into one of the following categories: "
+            f"{spec.options_text}. "
+            "Think step-by-step, but you MUST conclude with the exact phrase 'FINAL ANSWER: [Letter]'"
+        )
+
+    def _build_emission_prompt(self, spec: EmissionLinePromptSpec) -> str:
+        # Instead of an instruction, we append a completion suffix to the base template.
+        # This prevents the base LLM from falling back to chat/instruction priors
+        # and generating <think> or assistant tokens.
+        return " The visible emission lines in this spectrum are:"
+
+    def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
+        if not hasattr(task, "get_prompt_spec") and hasattr(task, "format_options"):
+            task = DistanceClassificationTask(task)
+
+        spec = task.get_prompt_spec()
         
+        question = None
+        prompt_suffix = None
+        
+        if isinstance(spec, DistanceClassPromptSpec):
+            # For distance classification, keep the zero-shot instruction
+            question = self._build_distance_prompt(spec)
+        elif isinstance(spec, EmissionLinePromptSpec):
+            # For emission lines, we use the training template with a suffix
+            prompt_suffix = self._build_emission_prompt(spec)
+        else:
+            question = task.default_prompt()
+
+        raw_inputs_list = []
         for sample in samples:
             f_tensor = torch.tensor(sample.flux).float().unsqueeze(0)
             wavelength = torch.tensor(sample.wavelength).float().unsqueeze(0)
@@ -86,17 +101,16 @@ class AstroBridgeResponder:
                 
             raw_inputs_list.append({"spectra": spectrum_dict})
             
-        answers = self._generate_caption_batch(raw_inputs_list, prompt)
+        answers = self._generate_caption_batch(raw_inputs_list, question=question, prompt_suffix=prompt_suffix)
         
-        labels_str = "".join(scheme.labels)
         return [
             ModelResponse(
-                label=extract_final_answer(a, labels_str), 
+                parsed=task.default_parse(a),
                 raw_text=a
             ) for a in answers
         ]
 
-    def _generate_caption_batch(self, raw_inputs_list: list[dict], question: str) -> list[str]:        
+    def _generate_caption_batch(self, raw_inputs_list: list[dict], question: str = None, prompt_suffix: str = None) -> list[str]:        
         with torch.no_grad():
             if not raw_inputs_list:
                 raise ValueError("raw_inputs_list is empty")
@@ -119,6 +133,8 @@ class AstroBridgeResponder:
                 modality_batch[name] = {"tokens": tokens, "mask": mask}
         
             prompt_text = question if question is not None else self.cfg.prompt.template.format(modalities=human_readable_subset(shown))
+            if prompt_suffix:
+                prompt_text += prompt_suffix
             prompt_ids = self.tokenizer([prompt_text] * B, add_special_tokens=False, return_tensors="pt")["input_ids"].to(self.device)
         
             device_type = "cuda" if str(self.device).startswith("cuda") else "cpu"

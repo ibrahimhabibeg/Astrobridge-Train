@@ -20,3 +20,28 @@ def load_test_spectra() -> pd.DataFrame:
     print(f"Found {len(df_test)} unique test samples.")
     
     return df_test
+
+def load_emission_line_ground_truth() -> pd.DataFrame:
+    """
+    Downloads the AstroBridge-Data extracted emission lines CSV from HuggingFace.
+    """
+    print("Loading emission lines ground truth...")
+    csv_path = hf_hub_download(
+        repo_id="UniverseTBD/AstroBridge-Data",
+        filename="observations/spectra/extracted_emission_lines.csv",
+        repo_type="dataset"
+    )
+    df = pd.read_csv(csv_path)
+    return df
+
+def load_test_spectra_emission_lines() -> pd.DataFrame:
+    """
+    Downloads spectra and emission lines datasets, filters to the 'test' split,
+    and keeps only samples that have emission line ground truth annotations.
+    """
+    df_spectra = load_test_spectra()
+    df_lines = load_emission_line_ground_truth()
+    valid_ids = set(df_lines["wiki_entity_id"])
+    df_test_lines = df_spectra[df_spectra["wiki_entity_id"].isin(valid_ids)]
+    print(f"Found {len(df_test_lines)} test spectra matching emission line ground truth.")
+    return df_test_lines

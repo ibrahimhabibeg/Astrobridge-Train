@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from typing import Protocol, List
-from ..buckets import BucketScheme
+from typing import Protocol, List, Any, Optional
+from ..tasks import EvalTask
 
 @dataclass
 class EvalSample:
@@ -12,14 +12,21 @@ class EvalSample:
 
 @dataclass
 class ModelResponse:
-    label: str
-    raw_text: str
+    raw_text: str = ""
+    parsed: Any = None
+    label: str = ""
     forced_fallback: bool = False
 
+    def __post_init__(self):
+        if self.parsed is not None and not self.label and isinstance(self.parsed, str):
+            self.label = self.parsed
+        elif self.label and self.parsed is None:
+            self.parsed = self.label
+
 class Responder(Protocol):
-    def respond_batch(self, samples: List[EvalSample], scheme: BucketScheme) -> List[ModelResponse]:
+    def respond_batch(self, samples: List[EvalSample], task: EvalTask) -> List[ModelResponse]:
         """
-        Given raw spectra samples and a bucket scheme, return predicted labels and raw text.
+        Given raw spectra samples and an evaluation task, return predictions and raw text.
         """
         ...
         
@@ -30,7 +37,6 @@ class Responder(Protocol):
         ...
 
 def get_responder(config: dict, device: str) -> Responder:
-    # Import inside the factory to avoid circular imports during initialization
     from .astrobridge import AstroBridgeResponder
     from .base_qwen import BaseQwenResponder
     from .base_qwen_text import BaseQwenTextResponder
