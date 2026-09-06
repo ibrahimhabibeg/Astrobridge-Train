@@ -134,6 +134,7 @@ def _compute_emission_line_metrics(results_dir: str, task: Any):
     report = classification_report(yt, yp, target_names=lines, output_dict=True, zero_division=0)
     
     per_line_metrics = {}
+    line_f1s = []
     for i, line in enumerate(lines):
         t_mask = yt[:, i] == 1
         p_mask = yp[:, i] == 1
@@ -151,7 +152,9 @@ def _compute_emission_line_metrics(results_dir: str, task: Any):
             "support": int(t_mask.sum())
         })
         per_line_metrics[line] = report[line]
+        line_f1s.append(report[line]["f1"])
 
+    macro_line_f1 = float(np.mean(line_f1s)) if line_f1s else 0.0
     exact_matches = int((df["gt_set"] == df["pred_set"]).sum())
     
     metrics = {
@@ -174,6 +177,9 @@ def _compute_emission_line_metrics(results_dir: str, task: Any):
             "micro_snr_weighted_recall": mic_rw,
             "micro_snr_weighted_f1": mic_f1w,
         },
+        "dataset_macro_level": {
+            "mean_line_f1": macro_line_f1,
+        },
         "per_line_metrics": per_line_metrics,
     }
     
@@ -181,6 +187,7 @@ def _compute_emission_line_metrics(results_dir: str, task: Any):
     print(f"Samples: {len(df)} | Exact Match: {exact_matches/len(df)*100:.1f}% | Format Errors: {format_errors}")
     print(f"Sample Means -> Prec: {means['p']*100:.1f}% | Rec: {means['r']*100:.1f}% | F1: {means['f1']:.3f} | SNR-F1: {means['f1w']:.3f}")
     print(f"Micro Totals -> Prec: {mic_p*100:.1f}% | Rec: {mic_r*100:.1f}% | F1: {mic_f1:.3f} | SNR-F1: {mic_f1w:.3f}")
+    print(f"Macro Means  -> Line F1: {macro_line_f1:.3f}")
     
     with open(os.path.join(results_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=4)
