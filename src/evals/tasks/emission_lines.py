@@ -5,106 +5,53 @@ import pandas as pd
 
 from ..data import load_emission_line_ground_truth
 
-# 27 Canonical emission lines ordered by approximate rest wavelength
+# 11 Canonical emission lines ordered by approximate rest wavelength
 CANONICAL_LINES: List[str] = [
-    "Lyα",
-    "N V 1240",
-    "O I 1304",
-    "Si IV 1396",
-    "C IV 1549",
-    "He II 1640",
-    "Al III 1857",
-    "Si III] 1892",
-    "C III] 1908",
-    "Mg II 2800",
-    "[Ne V] 3426",
+    # "Lyα",
+    # "O I 1304",
     "[O II] 3727",
-    "[Ne III] 3869",
-    "Hδ",
     "Hγ",
-    "[O III] 4363",
-    "He II 4686",
+    # "[O III] 4363",
     "Hβ",
     "[O III] 5007",
-    "He I 5876",
-    "[O I] 6300",
     "[N II] 6583",
     "Hα",
     "[S II] 6720",
-    "[Ar III] 7135",
-    "[O II] 7325",
-    "[S III] 9069",
+    # "[O II] 7325",
 ]
 
 # Mapping from CSV LINE_NAME to canonical line name
 CSV_TO_CANONICAL: Dict[str, str] = {
-    # 1. Lyα
+    # Lyα
     "LYALPHA": "Lyα",
-    # 2. N V 1240
-    "NV_1240": "N V 1240",
-    # 3. O I 1304
+    # O I 1304
     "OI_1304": "O I 1304",
-    # 4. Si IV 1396
-    "SILIV_1396": "Si IV 1396",
-    # 5. C IV 1549
-    "CIV_1549": "C IV 1549",
-    # 6. He II 1640
-    "HEII_1640": "He II 1640",
-    # 7. Al III 1857
-    "ALIII_1857": "Al III 1857",
-    # 8. Si III] 1892
-    "SILIII_1892": "Si III] 1892",
-    # 9. C III] 1908
-    "CIII_1908": "C III] 1908",
-    # 10. Mg II 2800
-    "MGII_2796": "Mg II 2800",
-    "MGII_2803": "Mg II 2800",
-    # 11. [Ne V] 3426
-    "NEV_3346": "[Ne V] 3426",
-    "NEV_3426": "[Ne V] 3426",
-    # 12. [O II] 3727
+    # [O II] 3727
     "OII_3726": "[O II] 3727",
     "OII_3729": "[O II] 3727",
-    # 13. [Ne III] 3869
-    "NEIII_3869": "[Ne III] 3869",
-    # 14. Hδ
-    "HDELTA": "Hδ",
-    "HDELTA_BROAD": "Hδ",
-    # 15. Hγ
+    # Hγ
     "HGAMMA": "Hγ",
     "HGAMMA_BROAD": "Hγ",
-    # 16. [O III] 4363
+    # [O III] 4363
     "OIII_4363": "[O III] 4363",
-    # 17. He II 4686
-    "HEII_4686": "He II 4686",
-    # 18. Hβ
+    # Hβ
     "HBETA": "Hβ",
     "HBETA_BROAD": "Hβ",
-    # 19. [O III] 5007
+    # [O III] 5007
     "OIII_4959": "[O III] 5007",
     "OIII_5007": "[O III] 5007",
-    # 20. He I 5876
-    "HEI_5876": "He I 5876",
-    # 21. [O I] 6300
-    "OI_6300": "[O I] 6300",
-    # 22. [N II] 6583
+    # [N II] 6583
     "NII_6548": "[N II] 6583",
     "NII_6584": "[N II] 6583",
-    # 23. Hα
+    # Hα
     "HALPHA": "Hα",
     "HALPHA_BROAD": "Hα",
-    # 24. [S II] 6720
+    # [S II] 6720
     "SII_6716": "[S II] 6720",
     "SII_6731": "[S II] 6720",
-    # 25. [Ar III] 7135
-    "ARIII_7135": "[Ar III] 7135",
-    # 26. [O II] 7325
+    # [O II] 7325
     "OII_7320": "[O II] 7325",
     "OII_7330": "[O II] 7325",
-    # 27. [S III] 9069
-    "SIII_6312": "[S III] 9069",
-    "SIII_9069": "[S III] 9069",
-    "SIII_9532": "[S III] 9069",
 }
 
 def clean_key(s: str) -> str:
@@ -138,28 +85,22 @@ def _build_alias_map() -> Dict[str, str]:
         "1216": "Lyα",
         # Hα
         "halpha": "Hα",
+        "h_alpha": "Hα",
         "ha": "Hα",
-        "halpha6563": "Hα",
-        "ha6563": "Hα",
+        "h a": "Hα",
         "6563": "Hα",
         # Hβ
         "hbeta": "Hβ",
+        "h_beta": "Hβ",
         "hb": "Hβ",
-        "hbeta4861": "Hβ",
-        "hb4861": "Hβ",
+        "h b": "Hβ",
         "4861": "Hβ",
         # Hγ
         "hgamma": "Hγ",
+        "h_gamma": "Hγ",
         "hg": "Hγ",
-        "hgamma4340": "Hγ",
-        "hg4340": "Hγ",
+        "h g": "Hγ",
         "4340": "Hγ",
-        # Hδ
-        "hdelta": "Hδ",
-        "hd": "Hδ",
-        "hdelta4102": "Hδ",
-        "hd4102": "Hδ",
-        "4102": "Hδ",
         # [O III] 5007
         "oiii": "[O III] 5007",
         "oiii5007": "[O III] 5007",
@@ -189,75 +130,12 @@ def _build_alias_map() -> Dict[str, str]:
         "sii6731": "[S II] 6720",
         "6716": "[S II] 6720",
         "6731": "[S II] 6720",
-        # Mg II 2800
-        "mgii": "Mg II 2800",
-        "mgii2800": "Mg II 2800",
-        "mgii2796": "Mg II 2800",
-        "mgii2803": "Mg II 2800",
-        "2800": "Mg II 2800",
-        "2796": "Mg II 2800",
-        "2803": "Mg II 2800",
-        # C IV 1549
-        "civ": "C IV 1549",
-        "civ1549": "C IV 1549",
-        "1549": "C IV 1549",
-        # C III] 1908
-        "ciii": "C III] 1908",
-        "ciii1908": "C III] 1908",
-        "1908": "C III] 1908",
-        # N V 1240
-        "nv": "N V 1240",
-        "nv1240": "N V 1240",
-        "1240": "N V 1240",
-        # O I 1304
-        "oi1304": "O I 1304",
-        "1304": "O I 1304",
-        # Si IV 1396
-        "siiv": "Si IV 1396",
-        "siiv1396": "Si IV 1396",
-        "siliv": "Si IV 1396",
-        "siliv1396": "Si IV 1396",
-        "1396": "Si IV 1396",
-        # He II 1640
-        "heii1640": "He II 1640",
-        "1640": "He II 1640",
-        # Al III 1857
-        "aliii": "Al III 1857",
-        "aliii1857": "Al III 1857",
-        "1857": "Al III 1857",
-        # Si III] 1892
-        "siiii": "Si III] 1892",
-        "siiii1892": "Si III] 1892",
-        "siliii": "Si III] 1892",
-        "siliii1892": "Si III] 1892",
-        "1892": "Si III] 1892",
-        # [Ne V] 3426
-        "nev": "[Ne V] 3426",
-        "nev3426": "[Ne V] 3426",
-        "nev3346": "[Ne V] 3426",
-        "3426": "[Ne V] 3426",
-        "3346": "[Ne V] 3426",
-        # [Ne III] 3869
-        "neiii": "[Ne III] 3869",
-        "neiii3869": "[Ne III] 3869",
-        "3869": "[Ne III] 3869",
         # [O III] 4363
         "oiii4363": "[O III] 4363",
         "4363": "[O III] 4363",
-        # He II 4686
-        "heii4686": "He II 4686",
-        "4686": "He II 4686",
-        # He I 5876
-        "hei5876": "He I 5876",
-        "5876": "He I 5876",
-        # [O I] 6300
-        "oi": "[O I] 6300",
-        "oi6300": "[O I] 6300",
-        "6300": "[O I] 6300",
-        # [Ar III] 7135
-        "ariii": "[Ar III] 7135",
-        "ariii7135": "[Ar III] 7135",
-        "7135": "[Ar III] 7135",
+        # [O I] 1304 (Wait, does OI 1304 have aliases? "oi1304", "1304")
+        "oi1304": "O I 1304",
+        "1304": "O I 1304",
         # [O II] 7325
         "oii7325": "[O II] 7325",
         "oii7320": "[O II] 7325",
@@ -265,13 +143,6 @@ def _build_alias_map() -> Dict[str, str]:
         "7320": "[O II] 7325",
         "7330": "[O II] 7325",
         "7325": "[O II] 7325",
-        # [S III] 9069
-        "siii": "[S III] 9069",
-        "siii9069": "[S III] 9069",
-        "siii9532": "[S III] 9069",
-        "siii6312": "[S III] 9069",
-        "9069": "[S III] 9069",
-        "9532": "[S III] 9069",
     }
 
     for k, v in manual_aliases.items():

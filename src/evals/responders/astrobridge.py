@@ -57,10 +57,14 @@ class AstroBridgeResponder:
         )
 
     def _build_emission_prompt(self, spec: EmissionLinePromptSpec) -> str:
-        # Instead of an instruction, we append a completion suffix to the base template.
-        # This prevents the base LLM from falling back to chat/instruction priors
-        # and generating <think> or assistant tokens.
-        return " The visible emission lines in this spectrum are:"
+        return (
+            "Analyze and describe the given spectrum and then identify all visible emission lines present in it.\n\n"
+            f"Allowed candidate lines:\n{spec.vocabulary_text}\n\n"
+            "You MUST conclude your response with the exact format:\n"
+            "EMISSION LINES: line1, line2, ...\n"
+            "If no emission lines from the list are present, write:\n"
+            "EMISSION LINES: NONE"
+        )
 
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
         if not hasattr(task, "get_prompt_spec") and hasattr(task, "format_options"):
@@ -68,15 +72,10 @@ class AstroBridgeResponder:
 
         spec = task.get_prompt_spec()
         
-        question = None
-        prompt_suffix = None
-        
         if isinstance(spec, DistanceClassPromptSpec):
-            # For distance classification, keep the zero-shot instruction
             question = self._build_distance_prompt(spec)
         elif isinstance(spec, EmissionLinePromptSpec):
-            # For emission lines, we use the training template with a suffix
-            prompt_suffix = self._build_emission_prompt(spec)
+            question = self._build_emission_prompt(spec)
         else:
             question = task.default_prompt()
 
@@ -101,16 +100,41 @@ class AstroBridgeResponder:
                 
             raw_inputs_list.append({"spectra": spectrum_dict})
             
-        answers = self._generate_caption_batch(raw_inputs_list, question=question, prompt_suffix=prompt_suffix)
+        answers = self._generate_caption_batch(raw_inputs_list, questions=question)
         
-        return [
-            ModelResponse(
-                parsed=task.default_parse(a),
-                raw_text=a
-            ) for a in answers
-        ]
+        responses = [None] * len(answers)
+        fallback_indices = []
+        fallback_inputs = []
+        fallback_questions = []
+        fallback_suffix = "\n\nEMISSION LINES:"
 
-    def _generate_caption_batch(self, raw_inputs_list: list[dict], question: str = None, prompt_suffix: str = None) -> list[str]:        
+        for i, a in enumerate(answers):
+            parsed = task.default_parse(a)
+            
+            if not parsed and isinstance(spec, EmissionLinePromptSpec):
+                # Collect for batched fallback
+                fallback_indices.append(i)
+                fallback_inputs.append(raw_inputs_list[i])
+                fallback_questions.append(question + "\n" + a + fallback_suffix)
+            else:
+                responses[i] = ModelResponse(parsed=parsed, raw_text=a, forced_fallback=False)
+                
+        # Perform batched forced fallback if any failed
+        if fallback_indices:
+            new_answers = self._generate_caption_batch(fallback_inputs, questions=fallback_questions)
+            for fallback_idx, new_a in zip(fallback_indices, new_answers):
+                orig_a = answers[fallback_idx]
+                combined_a = orig_a + fallback_suffix + " " + new_a
+                parsed = task.default_parse(combined_a)
+                responses[fallback_idx] = ModelResponse(
+                    parsed=parsed,
+                    raw_text=combined_a,
+                    forced_fallback=True
+                )
+                
+        return responses
+
+    def _generate_caption_batch(self, raw_inputs_list: list[dict], questions: list[str] = None) -> list[str]:        
         with torch.no_grad():
             if not raw_inputs_list:
                 raise ValueError("raw_inputs_list is empty")
@@ -132,10 +156,16 @@ class AstroBridgeResponder:
                         mask[i, :n] = False
                 modality_batch[name] = {"tokens": tokens, "mask": mask}
         
-            prompt_text = question if question is not None else self.cfg.prompt.template.format(modalities=human_readable_subset(shown))
-            if prompt_suffix:
-                prompt_text += prompt_suffix
-            prompt_ids = self.tokenizer([prompt_text] * B, add_special_tokens=False, return_tensors="pt")["input_ids"].to(self.device)
+            if questions is not None:
+                if isinstance(questions, str):
+                    prompt_texts = [questions] * B
+                else:
+                    prompt_texts = questions
+            else:
+                prompt_texts = [self.cfg.prompt.template.format(modalities=human_readable_subset(shown))] * B
+            
+            self.tokenizer.padding_side = "left"
+            prompt_ids = self.tokenizer(prompt_texts, add_special_tokens=False, return_tensors="pt", padding=True)["input_ids"].to(self.device)
         
             device_type = "cuda" if str(self.device).startswith("cuda") else "cpu"
             with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
