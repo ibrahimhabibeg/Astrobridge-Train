@@ -42,6 +42,9 @@ class DistanceClassificationTask:
             "Think step-by-step, but you MUST conclude with the exact phrase 'FINAL ANSWER: [Letter]'"
         )
 
+    def fallback_tag(self) -> str:
+        return "\n\nFINAL ANSWER: "
+
     def default_parse(self, raw_text: str) -> str:
         if not raw_text:
             return "UNKNOWN"

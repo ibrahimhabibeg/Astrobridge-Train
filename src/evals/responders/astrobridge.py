@@ -15,6 +15,8 @@ from captioner.utils.prompt import human_readable_subset
 class AstroBridgeResponder:
     def __init__(self, config: dict, device: str):
         assert "astrobridge_id" in config and config["astrobridge_id"], "Missing 'astrobridge_id' in config"
+        assert "max_tokens" in config, "Missing 'max_tokens' in config"
+        assert "fallback_max_tokens" in config, "Missing 'fallback_max_tokens' in config"
         self.device = device
         self.repo_id = config["astrobridge_id"]
         self.cfg = load_config("base", "data", "modalities", "model", "stage2")
@@ -42,6 +44,8 @@ class AstroBridgeResponder:
         self.model.eval()
         self.encoders = {name: build_encoder(name, self.cfg.modalities[name], device=self.device) for name in self.cfg.modalities}
         self.max_tokens = {n: int(c.max_tokens) for n, c in self.cfg.modalities.items()}
+        self.generate_max_tokens = config["max_tokens"]
+        self.fallback_max_tokens = config["fallback_max_tokens"]
 
     def get_config(self) -> dict:
         return {
@@ -100,32 +104,38 @@ class AstroBridgeResponder:
                 
             raw_inputs_list.append({"spectra": spectrum_dict})
             
-        answers = self._generate_caption_batch(raw_inputs_list, questions=question)
+        answers = self._generate_caption_batch(raw_inputs_list, questions=question, max_new_tokens=self.generate_max_tokens)
         
         responses = [None] * len(answers)
         fallback_indices = []
         fallback_inputs = []
         fallback_questions = []
-        fallback_suffix = "\n\nEMISSION LINES:"
+        
+        fallback_tag = task.fallback_tag() if hasattr(task, "fallback_tag") else ""
 
         for i, a in enumerate(answers):
             parsed = task.default_parse(a)
             
-            if not parsed and isinstance(spec, EmissionLinePromptSpec):
+            if (parsed is None or parsed == "UNKNOWN") and fallback_tag:
                 # Collect for batched fallback
                 fallback_indices.append(i)
                 fallback_inputs.append(raw_inputs_list[i])
-                fallback_questions.append(question + "\n" + a + fallback_suffix)
+                fallback_questions.append(question + "\n" + a + fallback_tag)
             else:
-                responses[i] = ModelResponse(parsed=parsed, raw_text=a, forced_fallback=False)
+                responses[i] = ModelResponse(parsed=parsed if parsed is not None else [], raw_text=a, forced_fallback=False)
                 
         # Perform batched forced fallback if any failed
         if fallback_indices:
-            new_answers = self._generate_caption_batch(fallback_inputs, questions=fallback_questions)
+            new_answers = self._generate_caption_batch(fallback_inputs, questions=fallback_questions, max_new_tokens=self.fallback_max_tokens)
             for fallback_idx, new_a in zip(fallback_indices, new_answers):
                 orig_a = answers[fallback_idx]
-                combined_a = orig_a + fallback_suffix + " " + new_a
+                combined_a = orig_a + fallback_tag + " " + new_a
                 parsed = task.default_parse(combined_a)
+                if parsed is None or parsed == "UNKNOWN":
+                    if getattr(task, "name", "") == "emission_lines":
+                        parsed = []
+                    else:
+                        parsed = "UNKNOWN"
                 responses[fallback_idx] = ModelResponse(
                     parsed=parsed,
                     raw_text=combined_a,
@@ -134,7 +144,7 @@ class AstroBridgeResponder:
                 
         return responses
 
-    def _generate_caption_batch(self, raw_inputs_list: list[dict], questions: list[str] = None) -> list[str]:        
+    def _generate_caption_batch(self, raw_inputs_list: list[dict], questions: list[str] = None, max_new_tokens: int = 256) -> list[str]:        
         with torch.no_grad():
             if not raw_inputs_list:
                 raise ValueError("raw_inputs_list is empty")
@@ -179,7 +189,7 @@ class AstroBridgeResponder:
                 gen = self.model.llm.generate(
                     inputs_embeds=inputs_embeds,
                     attention_mask=attention_mask,
-                    max_new_tokens=256,
+                    max_new_tokens=max_new_tokens,
                     do_sample=False,
                     pad_token_id=pad_token_id,
                 )

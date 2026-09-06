@@ -201,21 +201,24 @@ class EmissionLineTask:
             "EMISSION LINES: NONE"
         )
 
-    def default_parse(self, raw_text: str) -> List[str]:
+    def fallback_tag(self) -> str:
+        return "\n\nEMISSION LINES: "
+
+    def default_parse(self, raw_text: str) -> Optional[List[str]]:
         if not raw_text or not raw_text.strip():
-            return []
+            return None
 
         # 1. Look for explicit tag
         match = re.search(r"EMISSION LINES:\s*(.*)", raw_text, re.IGNORECASE | re.DOTALL)
         if match:
             target_str = match.group(1).strip()
         else:
-            # Fallback: look for "LINES:" or check the full text
+            # Fallback: look for "LINES:"
             lines_match = re.search(r"\bLINES:\s*(.*)", raw_text, re.IGNORECASE | re.DOTALL)
             if lines_match:
                 target_str = lines_match.group(1).strip()
             else:
-                target_str = raw_text
+                return None  # Strictly depend on finding the keyword
 
         # If it says NONE
         if re.search(r"\bNONE\b", target_str, re.IGNORECASE) and not re.search(r"[A-Za-z0-9]", target_str.replace("NONE", "").replace("none", "")):

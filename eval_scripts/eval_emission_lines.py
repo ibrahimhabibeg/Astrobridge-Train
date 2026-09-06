@@ -13,13 +13,14 @@ RUN_CONFIG = {
     "responder_type": "base_qwen_text",                         # 'astrobridge', 'base_qwen', 'base_qwen_text', or 'gemini'
     "astrobridge_id": "UniverseTBD/astrobridge-model-v3_qwen", # The fine-tuned checkpoint
     "base_llm_id": "Qwen/Qwen3.5-9B",                   # The base language model
+    "max_tokens": 4096,
+    "fallback_max_tokens": 128,
     "gemini_model": "gemini-3.7-flash",
     "gemini_num_workers": 4, 
-    "gemini_max_output_tokens": 4096,
     "gemini_temperature": 1.0,                          # Set to 0.0 for greedy decoding (deterministic)
-    "batch_size": 64,
-    "gpu": "A100-80GB",                                 # 'A100-80GB' (for astrobridge) or 'A10' (for base)
-    "limit": None,                                      # Set to an int (e.g. 5) to test on a subset, or None for full test set
+    "batch_size": 1,
+    "gpu": "A10",                                 # 'A100-80GB' (for astrobridge) or 'A10' (for base)
+    "limit": 5,                                      # Set to an int (e.g. 5) to test on a subset, or None for full test set
     "suffix_tag": None,                                 # Leave as None to auto-generate (responder_lines)
 }
 # ==========================================

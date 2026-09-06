@@ -22,7 +22,11 @@ def subsample_spectrum(wavelength, flux, num_points=100):
 class BaseQwenTextResponder:
     def __init__(self, config: dict, device: str):
         assert "base_llm_id" in config and config["base_llm_id"], "Missing 'base_llm_id' in config"
+        assert "max_tokens" in config, "Missing 'max_tokens' in config"
+        assert "fallback_max_tokens" in config, "Missing 'fallback_max_tokens' in config"
         self._model_id = config["base_llm_id"]
+        self._max_tokens = config["max_tokens"]
+        self._fallback_max_tokens = config["fallback_max_tokens"]
         self._device = device
         self._processor = AutoProcessor.from_pretrained(self._model_id, trust_remote_code=True)
         self._model = Qwen3_5ForConditionalGeneration.from_pretrained(
@@ -52,12 +56,15 @@ class BaseQwenTextResponder:
 
     def _build_emission_prompt(self, spec: EmissionLinePromptSpec, w_str: str, f_str: str) -> str:
         return (
-            "Identify all visible emission lines present in the following astronomical spectrum.\n\n"
+            "Briefly analyze and describe the following astronomical spectrum data and then identify all visible emission lines present in it.\n\n"
             f"Allowed candidate lines:\n{spec.vocabulary_text}\n\n"
             "Spectrum Data (100 evenly spaced points):\n"
             f"Wavelength (Å): [{w_str}]\n"
             f"Flux: [{f_str}]\n\n"
-            "Provide exactly ONE sentence of analysis, then on a new line write 'EMISSION LINES: line1, line2, ...' or 'EMISSION LINES: NONE'."
+            "You MUST conclude your response with the exact format:\n"
+            "EMISSION LINES: line1, line2, ...\n"
+            "If no emission lines from the list are present, write:\n"
+            "EMISSION LINES: NONE"
         )
 
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
@@ -100,7 +107,7 @@ class BaseQwenTextResponder:
         with torch.no_grad():
             output_ids = self._model.generate(
                 **inputs,
-                max_new_tokens=1024,
+                max_new_tokens=self._max_tokens,
                 do_sample=False
             )
             
@@ -110,20 +117,10 @@ class BaseQwenTextResponder:
         
         parsed_results = [task.default_parse(r) for r in raw_responses]
 
-        if isinstance(spec, DistanceClassPromptSpec):
-            failed_indices = [i for i, p in enumerate(parsed_results) if p == "UNKNOWN"]
-            fallback_tag = "\n\nFINAL ANSWER:"
-            max_fb_tokens = 10
-        elif isinstance(spec, EmissionLinePromptSpec):
-            failed_indices = [i for i, p in enumerate(parsed_results) if not p and "EMISSION LINES" not in raw_responses[i].upper()]
-            fallback_tag = "\n\nEMISSION LINES:"
-            max_fb_tokens = 64
-        else:
-            failed_indices = []
-            fallback_tag = ""
-            max_fb_tokens = 10
+        failed_indices = [i for i, p in enumerate(parsed_results) if p is None or p == "UNKNOWN"]
+        fallback_tag = task.fallback_tag() if hasattr(task, "fallback_tag") else ""
         
-        if failed_indices:
+        if failed_indices and fallback_tag:
             fallback_texts = []
             for i in failed_indices:
                 fallback_prompt = texts[i] + raw_responses[i] + fallback_tag
@@ -135,7 +132,7 @@ class BaseQwenTextResponder:
             with torch.no_grad():
                 fallback_output_ids = self._model.generate(
                     **fallback_inputs,
-                    max_new_tokens=max_fb_tokens,
+                    max_new_tokens=self._fallback_max_tokens,
                     do_sample=False
                 )
                 
@@ -146,13 +143,18 @@ class BaseQwenTextResponder:
             for idx, f_idx in enumerate(failed_indices):
                 new_raw = raw_responses[f_idx] + fallback_tag + " " + fb_raw_responses[idx]
                 raw_responses[f_idx] = new_raw
-                parsed_results[f_idx] = task.default_parse(new_raw)
+                parsed = task.default_parse(new_raw)
+                if parsed is None or parsed == "UNKNOWN":
+                    if getattr(task, "name", "") == "emission_lines":
+                        parsed = []
+                    else:
+                        parsed = "UNKNOWN"
+                parsed_results[f_idx] = parsed
         
         return [
             ModelResponse(
-                parsed=parsed_results[i], 
+                parsed=parsed_results[i] if parsed_results[i] is not None else [], 
                 raw_text=raw_responses[i],
                 forced_fallback=(i in failed_indices)
-            ) 
-            for i in range(len(raw_responses))
+            ) for i in range(len(raw_responses))
         ]

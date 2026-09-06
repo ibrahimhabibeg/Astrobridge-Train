@@ -15,11 +15,14 @@ class GeminiResponder:
     def __init__(self, config: dict, device: str):
         assert "gemini_model" in config and config["gemini_model"], "Missing 'gemini_model' in config"
         assert "gemini_num_workers" in config, "Missing 'gemini_num_workers' in config"
+        assert "max_tokens" in config, "Missing 'max_tokens' in config"
+        assert "fallback_max_tokens" in config, "Missing 'fallback_max_tokens' in config"
         
         # We ignore device for Gemini API, but accept it for compatibility
         self._model_name = config["gemini_model"]
         self._num_workers = config["gemini_num_workers"]
-        self._max_output_tokens = config.get("gemini_max_output_tokens", 1024)
+        self._max_tokens = config["max_tokens"]
+        self._fallback_max_tokens = config["fallback_max_tokens"]
         self._temperature = config.get("gemini_temperature", 0.0)
         self.client = genai.Client()
 
@@ -39,10 +42,12 @@ class GeminiResponder:
 
     def _build_emission_prompt(self, spec: EmissionLinePromptSpec) -> str:
         return (
-            "Identify all visible emission lines present in the astronomical spectrum shown in the image.\n\n"
+            "Analyze and describe the astronomical spectrum shown in the image and then identify all visible emission lines present in it.\n\n"
             f"Allowed candidate lines:\n{spec.vocabulary_text}\n\n"
-            "Provide your extracted lines on the final line in the exact format: 'EMISSION LINES: line1, line2, ...'.\n"
-            "If no emission lines from the candidate list are visible, write: 'EMISSION LINES: NONE'."
+            "You MUST conclude your response with the exact format:\n"
+            "EMISSION LINES: line1, line2, ...\n"
+            "If no emission lines from the list are present, write:\n"
+            "EMISSION LINES: NONE"
         )
 
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
@@ -72,14 +77,17 @@ class GeminiResponder:
         
         def process_sample(idx: int, img: Image.Image):
             try:
-                chat = self.client.chats.create(model=self._model_name)
-                
                 gen_config = types.GenerateContentConfig(
-                    max_output_tokens=self._max_output_tokens,
+                    max_output_tokens=self._max_tokens,
                     temperature=self._temperature
                 )
                 
-                response = chat.send_message([img, prompt], config=gen_config)
+                contents = [types.Content(role="user", parts=[types.Part.from_image(img), types.Part.from_text(text=prompt)])]
+                response = self.client.models.generate_content(
+                    model=self._model_name,
+                    contents=contents,
+                    config=gen_config
+                )
                 raw_text = response.text if response.text else ""
             except Exception as e:
                 print(f"Gemini API error on index {idx}: {e}")
@@ -88,37 +96,36 @@ class GeminiResponder:
             parsed = task.default_parse(raw_text)
             forced_fallback = False
             
-            # Conditional Fallback: If it stopped prematurely or failed to format the answer
-            should_fallback = False
-            fallback_prompt = ""
-            fallback_tokens = 30
-
-            if isinstance(spec, DistanceClassPromptSpec):
-                if parsed == "UNKNOWN" and raw_text:
-                    should_fallback = True
-                    fallback_prompt = "You did not provide the final answer. Please provide it now in the exact format: 'FINAL ANSWER: <label>'."
-                    fallback_tokens = 15
-            elif isinstance(spec, EmissionLinePromptSpec):
-                if not parsed and raw_text and "EMISSION LINES" not in raw_text.upper():
-                    should_fallback = True
-                    fallback_prompt = "You did not provide the final answer. Please provide it now in the exact format: 'EMISSION LINES: line1, line2, ...' or 'EMISSION LINES: NONE'."
-                    fallback_tokens = 128
-
-            if should_fallback:
+            fallback_tag = task.fallback_tag() if hasattr(task, "fallback_tag") else ""
+            
+            if (parsed is None or parsed == "UNKNOWN") and fallback_tag:
                 try:
                     forced_fallback = True
                     fallback_config = types.GenerateContentConfig(
-                        max_output_tokens=fallback_tokens,
+                        max_output_tokens=self._fallback_max_tokens,
                         temperature=self._temperature
                     )
-                    fallback_response = chat.send_message(fallback_prompt, config=fallback_config)
+                    fallback_contents = [
+                        types.Content(role="user", parts=[types.Part.from_image(img), types.Part.from_text(text=prompt)]),
+                        types.Content(role="model", parts=[types.Part.from_text(text=raw_text + fallback_tag)])
+                    ]
+                    fallback_response = self.client.models.generate_content(
+                        model=self._model_name,
+                        contents=fallback_contents,
+                        config=fallback_config
+                    )
                     fallback_text = fallback_response.text if fallback_response.text else ""
-                    raw_text += "\n\n[FALLBACK]: " + fallback_text
-                    parsed = task.default_parse(fallback_text)
+                    raw_text += fallback_tag + " " + fallback_text
+                    parsed = task.default_parse(raw_text)
+                    if parsed is None or parsed == "UNKNOWN":
+                        if getattr(task, "name", "") == "emission_lines":
+                            parsed = []
+                        else:
+                            parsed = "UNKNOWN"
                 except Exception as e:
                     print(f"Gemini API fallback error on index {idx}: {e}")
             
-            return ModelResponse(parsed=parsed, raw_text=raw_text, forced_fallback=forced_fallback)
+            return ModelResponse(parsed=parsed if parsed is not None else [], raw_text=raw_text, forced_fallback=forced_fallback)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self._num_workers) as executor:
             future_to_idx = {
