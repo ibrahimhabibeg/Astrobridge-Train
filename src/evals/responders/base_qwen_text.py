@@ -24,9 +24,11 @@ class BaseQwenTextResponder:
         assert "base_llm_id" in config and config["base_llm_id"], "Missing 'base_llm_id' in config"
         assert "max_tokens" in config, "Missing 'max_tokens' in config"
         assert "fallback_max_tokens" in config, "Missing 'fallback_max_tokens' in config"
+        assert "num_points" in config, "Missing 'num_points' in config"
         self._model_id = config["base_llm_id"]
         self._max_tokens = config["max_tokens"]
         self._fallback_max_tokens = config["fallback_max_tokens"]
+        self._num_points = config["num_points"]
         self._device = device
         self._processor = AutoProcessor.from_pretrained(self._model_id, trust_remote_code=True)
         self._model = Qwen3_5ForConditionalGeneration.from_pretrained(
@@ -41,24 +43,33 @@ class BaseQwenTextResponder:
         return {
             "type": "BaseQwenTextResponder",
             "model_id": self._model_id,
-            "num_points": 100
+            "num_points": self._num_points
         }
 
-    def _build_distance_prompt(self, spec: DistanceClassPromptSpec, w_str: str, f_str: str) -> str:
+    def _build_distance_prompt(self, spec: DistanceClassPromptSpec, w_str: str, f_str: str, num_points: int) -> str:
+        # return (
+        #     "Classify the redshift (z) of the following astronomical spectrum.\n\n"
+        #     f"Categories:\n{spec.options_multiline}\n\n"
+        #     f"Spectrum Data ({num_points} evenly spaced points):\n"
+        #     f"Wavelength (Å): [{w_str}]\n"
+        #     f"Flux: [{f_str}]\n\n"
+        #     "Provide exactly ONE sentence of analysis, then on a new line write 'FINAL ANSWER: <label>'."
+        # )
         return (
-            "Classify the redshift (z) of the following astronomical spectrum.\n\n"
-            f"Categories:\n{spec.options_multiline}\n\n"
-            "Spectrum Data (100 evenly spaced points):\n"
+            "Briefly analyze and describe the given spectrum and then classify the distance of the observed astronomical object into one of the following categories:\n"
+            f"{spec.options_text}.\n\n"
+            f"Spectrum Data ({num_points} evenly spaced points):\n"
             f"Wavelength (Å): [{w_str}]\n"
             f"Flux: [{f_str}]\n\n"
-            "Provide exactly ONE sentence of analysis, then on a new line write 'FINAL ANSWER: <label>'."
+            "You MUST conclude your response with the exact format:\n"
+            "FINAL ANSWER: [Letter]"
         )
 
-    def _build_emission_prompt(self, spec: EmissionLinePromptSpec, w_str: str, f_str: str) -> str:
+    def _build_emission_prompt(self, spec: EmissionLinePromptSpec, w_str: str, f_str: str, num_points: int) -> str:
         return (
             "Briefly analyze and describe the following astronomical spectrum data and then identify all visible emission lines present in it.\n\n"
             f"Allowed candidate lines:\n{spec.vocabulary_text}\n\n"
-            "Spectrum Data (100 evenly spaced points):\n"
+            f"Spectrum Data ({num_points} evenly spaced points):\n"
             f"Wavelength (Å): [{w_str}]\n"
             f"Flux: [{f_str}]\n\n"
             "You MUST conclude your response with the exact format:\n"
@@ -75,11 +86,11 @@ class BaseQwenTextResponder:
         messages_batch = []
         
         for sample in samples:
-            w_str, f_str = subsample_spectrum(sample.wavelength, sample.flux, num_points=100)
+            w_str, f_str = subsample_spectrum(sample.wavelength, sample.flux, num_points=self._num_points)
             if isinstance(spec, DistanceClassPromptSpec):
-                prompt = self._build_distance_prompt(spec, w_str, f_str)
+                prompt = self._build_distance_prompt(spec, w_str, f_str, self._num_points)
             elif isinstance(spec, EmissionLinePromptSpec):
-                prompt = self._build_emission_prompt(spec, w_str, f_str)
+                prompt = self._build_emission_prompt(spec, w_str, f_str, self._num_points)
             else:
                 prompt = task.default_prompt(wavelength_str=w_str, flux_str=f_str)
             
