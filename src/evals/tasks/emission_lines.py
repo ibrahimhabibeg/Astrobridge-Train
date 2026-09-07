@@ -5,7 +5,6 @@ import pandas as pd
 
 from ..data import load_emission_line_ground_truth
 
-# 11 Canonical emission lines ordered by approximate rest wavelength
 CANONICAL_LINES: List[str] = [
     # "Lyα",
     # "O I 1304",
@@ -54,26 +53,33 @@ CSV_TO_CANONICAL: Dict[str, str] = {
     "OII_7330": "[O II] 7325",
 }
 
+# Filter out inactive lines
+CSV_TO_CANONICAL = {k: v for k, v in CSV_TO_CANONICAL.items() if v in CANONICAL_LINES}
+
+
 def clean_key(s: str) -> str:
     """Normalize line name string for robust alias matching."""
     s = s.strip().lower()
-    s = s.replace("α", "alpha").replace("β", "beta").replace("γ", "gamma").replace("δ", "delta")
+    s = (
+        s.replace("α", "alpha")
+        .replace("β", "beta")
+        .replace("γ", "gamma")
+        .replace("δ", "delta")
+    )
     for ch in "[](){}*-_,;:. \t\n/\\":
         s = s.replace(ch, "")
     return s
 
+
 def _build_alias_map() -> Dict[str, str]:
     alias_map: Dict[str, str] = {}
 
-    # Map canonical names and their clean keys
     for line in CANONICAL_LINES:
         alias_map[clean_key(line)] = line
 
-    # Map CSV names
     for csv_name, canonical in CSV_TO_CANONICAL.items():
         alias_map[clean_key(csv_name)] = canonical
 
-    # Add common astronomical aliases
     manual_aliases: Dict[str, str] = {
         # Lyα
         "lymanalpha": "Lyα",
@@ -85,21 +91,15 @@ def _build_alias_map() -> Dict[str, str]:
         "1216": "Lyα",
         # Hα
         "halpha": "Hα",
-        "h_alpha": "Hα",
         "ha": "Hα",
-        "h a": "Hα",
         "6563": "Hα",
         # Hβ
         "hbeta": "Hβ",
-        "h_beta": "Hβ",
         "hb": "Hβ",
-        "h b": "Hβ",
         "4861": "Hβ",
         # Hγ
         "hgamma": "Hγ",
-        "h_gamma": "Hγ",
         "hg": "Hγ",
-        "h g": "Hγ",
         "4340": "Hγ",
         # [O III] 5007
         "oiii": "[O III] 5007",
@@ -133,7 +133,7 @@ def _build_alias_map() -> Dict[str, str]:
         # [O III] 4363
         "oiii4363": "[O III] 4363",
         "4363": "[O III] 4363",
-        # [O I] 1304 (Wait, does OI 1304 have aliases? "oi1304", "1304")
+        # [O I] 1304
         "oi1304": "O I 1304",
         "1304": "O I 1304",
         # [O II] 7325
@@ -146,17 +146,21 @@ def _build_alias_map() -> Dict[str, str]:
     }
 
     for k, v in manual_aliases.items():
-        alias_map[clean_key(k)] = v
+        if v in CANONICAL_LINES:
+            alias_map[clean_key(k)] = v
 
     return alias_map
 
+
 CLEAN_TO_CANONICAL = _build_alias_map()
+
 
 @dataclass
 class EmissionLinePromptSpec:
     canonical_lines: List[str]
     output_format_tag: str
     vocabulary_text: str
+
 
 class EmissionLineTask:
     name: str = "emission_lines"
@@ -173,7 +177,7 @@ class EmissionLineTask:
         # Pre-load and group ground truth by wiki_entity_id
         if ground_truth_df is None:
             ground_truth_df = load_emission_line_ground_truth()
-        
+
         self.ground_truth_by_id: Dict[str, Dict[str, float]] = {}
         for _, row in ground_truth_df.iterrows():
             eid = str(row["wiki_entity_id"])
@@ -185,7 +189,10 @@ class EmissionLineTask:
                 if eid not in self.ground_truth_by_id:
                     self.ground_truth_by_id[eid] = {}
                 # If multiple lines map to same canonical (e.g. doublets/broad), take max SNR
-                if canonical not in self.ground_truth_by_id[eid] or snr > self.ground_truth_by_id[eid][canonical]:
+                if (
+                    canonical not in self.ground_truth_by_id[eid]
+                    or snr > self.ground_truth_by_id[eid][canonical]
+                ):
                     self.ground_truth_by_id[eid][canonical] = snr
 
     def get_prompt_spec(self) -> EmissionLinePromptSpec:
@@ -208,28 +215,22 @@ class EmissionLineTask:
         if not raw_text or not raw_text.strip():
             return None
 
-        # 1. Look for explicit tag
-        match = re.search(r"EMISSION LINES:\s*(.*)", raw_text, re.IGNORECASE | re.DOTALL)
-        if match:
-            target_str = match.group(1).strip()
+        matches = re.findall(r"EMISSION LINES:\s*(.*)", raw_text, re.IGNORECASE)
+        if matches:
+            target_str = matches[-1].strip()
         else:
-            # Fallback: look for "LINES:"
-            lines_match = re.search(r"\bLINES:\s*(.*)", raw_text, re.IGNORECASE | re.DOTALL)
-            if lines_match:
-                target_str = lines_match.group(1).strip()
-            else:
-                return None  # Strictly depend on finding the keyword
+            return None
 
-        # If it says NONE
-        if re.search(r"\bNONE\b", target_str, re.IGNORECASE) and not re.search(r"[A-Za-z0-9]", target_str.replace("NONE", "").replace("none", "")):
+        if re.search(r"\bNONE\b", target_str, re.IGNORECASE) and not re.search(
+            r"[A-Za-z0-9]", target_str.replace("NONE", "").replace("none", "")
+        ):
             return []
 
-        # Split items by comma, semicolon, or newline
         raw_tokens = re.split(r"[,;\n]+", target_str)
         extracted = []
         for raw_tok in raw_tokens:
-            # Strip leading bullet points or numbers (e.g. "- Halpha" or "1. Hbeta")
-            tok = re.sub(r"^\s*[-*•\d\.]+\s*", "", raw_tok).strip()
+            # Strip leading bullet points (e.g. "- Halpha" or "* Hbeta")
+            tok = re.sub(r"^\s*[-*•]\s+", "", raw_tok).strip()
             ck = clean_key(tok)
             if not ck or ck == "none":
                 continue
@@ -238,7 +239,6 @@ class EmissionLineTask:
                 if can_line not in extracted:
                     extracted.append(can_line)
 
-        # Fallback if delimiter splitting didn't find anything:
         # Search the target_str directly for known canonical lines and key aliases
         if not extracted:
             for clean_k, can_name in CLEAN_TO_CANONICAL.items():
@@ -257,7 +257,9 @@ class EmissionLineTask:
         elif isinstance(item, (dict, pd.Series)):
             eid = str(item.get("wiki_entity_id", ""))
         else:
-            raise ValueError(f"Cannot extract ground truth wiki_entity_id from item of type {type(item)}")
+            raise ValueError(
+                f"Cannot extract ground truth wiki_entity_id from item of type {type(item)}"
+            )
 
         return self.ground_truth_by_id.get(eid, {})
 
