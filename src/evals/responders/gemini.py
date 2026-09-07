@@ -16,9 +16,7 @@ class GeminiResponder:
         assert "gemini_model" in config and config["gemini_model"], "Missing 'gemini_model' in config"
         assert "gemini_num_workers" in config, "Missing 'gemini_num_workers' in config"
         assert "max_tokens" in config, "Missing 'max_tokens' in config"
-        assert "fallback_max_tokens" in config, "Missing 'fallback_max_tokens' in config"
-        
-        # We ignore device for Gemini API, but accept it for compatibility
+        assert "fallback_max_tokens" in config, "Missing 'fallback_max_tokens' in config"        
         self._model_name = config["gemini_model"]
         self._num_workers = config["gemini_num_workers"]
         self._max_tokens = config["max_tokens"]
@@ -34,10 +32,16 @@ class GeminiResponder:
         }
 
     def _build_distance_prompt(self, spec: DistanceClassPromptSpec) -> str:
+        # return (
+        #     "Classify the redshift (z) of the astronomical spectrum shown in the image.\n\n"
+        #     f"Categories:\n{spec.options_multiline}\n\n"
+        #     "Provide your classification in the exact format: 'FINAL ANSWER: <label>'."
+        # )
         return (
-            "Classify the redshift (z) of the astronomical spectrum shown in the image.\n\n"
-            f"Categories:\n{spec.options_multiline}\n\n"
-            "Provide your classification in the exact format: 'FINAL ANSWER: <label>'."
+            "Briefly analyze and describe the given spectrum and then classify the distance of the observed astronomical object into one of the following categories:\n"
+            f"{spec.options_text}.\n"
+            "You MUST conclude your response with the exact format:\n"
+            "FINAL ANSWER: [Letter]"
         )
 
     def _build_emission_prompt(self, spec: EmissionLinePromptSpec) -> str:
@@ -62,7 +66,6 @@ class GeminiResponder:
         else:
             prompt = task.default_prompt()
         
-        # Prepare inputs
         images = []
         for sample in samples:
             png_bytes = render_spectrum_plot(
@@ -72,7 +75,6 @@ class GeminiResponder:
             image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
             images.append(image)
             
-        # Process concurrently
         responses = [None] * len(samples)
         
         def process_sample(idx: int, img: Image.Image):
@@ -82,40 +84,30 @@ class GeminiResponder:
                     temperature=self._temperature
                 )
                 
-                contents = [types.Content(role="user", parts=[types.Part.from_image(img), types.Part.from_text(text=prompt)])]
-                response = self.client.models.generate_content(
-                    model=self._model_name,
-                    contents=contents,
-                    config=gen_config
-                )
+                chat = self.client.chats.create(model=self._model_name, config=gen_config)
+                response = chat.send_message([img, prompt])
                 raw_text = response.text if response.text else ""
             except Exception as e:
                 print(f"Gemini API error on index {idx}: {e}")
                 raw_text = ""
+                chat = None
             
             parsed = task.default_parse(raw_text)
             forced_fallback = False
             
             fallback_tag = task.fallback_tag() if hasattr(task, "fallback_tag") else ""
             
-            if (parsed is None or parsed == "UNKNOWN") and fallback_tag:
+            if (parsed is None or parsed == "UNKNOWN") and fallback_tag and chat:
                 try:
                     forced_fallback = True
                     fallback_config = types.GenerateContentConfig(
                         max_output_tokens=self._fallback_max_tokens,
                         temperature=self._temperature
                     )
-                    fallback_contents = [
-                        types.Content(role="user", parts=[types.Part.from_image(img), types.Part.from_text(text=prompt)]),
-                        types.Content(role="model", parts=[types.Part.from_text(text=raw_text + fallback_tag)])
-                    ]
-                    fallback_response = self.client.models.generate_content(
-                        model=self._model_name,
-                        contents=fallback_contents,
-                        config=fallback_config
-                    )
+                    fallback_prompt = f"Please continue your previous response and output only the final answer starting with the indicator '{fallback_tag.strip()}'"
+                    fallback_response = chat.send_message(fallback_prompt, config=fallback_config)
                     fallback_text = fallback_response.text if fallback_response.text else ""
-                    raw_text += fallback_tag + " " + fallback_text
+                    raw_text += "\n" + fallback_text
                     parsed = task.default_parse(raw_text)
                     if parsed is None or parsed == "UNKNOWN":
                         if getattr(task, "name", "") == "emission_lines":
