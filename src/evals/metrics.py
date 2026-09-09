@@ -107,7 +107,7 @@ def _compute_emission_line_metrics(results_dir: str, task: Any):
             res = np.where((den == 0) & empty_cond, 1.0, res)
         return pd.Series(res).fillna(0.0)
 
-    df["p"] = safe_div(df["len_tp"], df["len_pred"], df["len_gt"] == 0)
+    df["p"] = safe_div(df["len_tp"], df["len_pred"], df["len_pred"] == 0)
     df["r"] = safe_div(df["len_tp"], df["len_gt"], df["len_pred"] == 0)
     df["f1"] = safe_div(2 * df["p"] * df["r"], df["p"] + df["r"])
     
