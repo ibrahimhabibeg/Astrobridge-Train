@@ -28,11 +28,13 @@ def get_task(task_type: str, **kwargs) -> EvalTask:
     from .distance_classification import DistanceClassificationTask
     from .emission_lines import EmissionLineTask
     from .source_classification import SourceClassificationTask
+    from .subclass_classification import SubclassClassificationTask
 
     TASK_REGISTRY = {
         "distance_classification": DistanceClassificationTask,
         "emission_lines": EmissionLineTask,
         "source_classification": SourceClassificationTask,
+        "subclass_classification": SubclassClassificationTask,
     }
 
     if task_type not in TASK_REGISTRY:

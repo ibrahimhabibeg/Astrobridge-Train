@@ -74,3 +74,19 @@ def load_test_spectra_source_classification(active_classes_keys: list[str]) -> p
     df_test_types = df_spectra.merge(df_types[['wiki_entity_id', 'class']], on='wiki_entity_id', how='inner')
     print(f"Found {len(df_test_types)} test spectra matching active source classes.")
     return df_test_types
+
+def load_test_spectra_subclass_classification(active_classes_keys: list[str]) -> pd.DataFrame:
+    """
+    Downloads spectra and extracted types, filters to the 'test' split,
+    keeps only samples matching active subclasses, and merges the subclass labels.
+    """
+    df_spectra = load_test_spectra()
+    df_types = load_source_classification_ground_truth()
+    
+    # Filter to active subclasses
+    df_types = df_types[df_types['subclass'].isin(active_classes_keys)]
+    
+    # Merge
+    df_test_types = df_spectra.merge(df_types[['wiki_entity_id', 'subclass']], on='wiki_entity_id', how='inner')
+    print(f"Found {len(df_test_types)} test spectra matching active source subclasses.")
+    return df_test_types
