@@ -27,10 +27,12 @@ class EvalTask(Protocol):
 def get_task(task_type: str, **kwargs) -> EvalTask:
     from .distance_classification import DistanceClassificationTask
     from .emission_lines import EmissionLineTask
+    from .source_classification import SourceClassificationTask
 
     TASK_REGISTRY = {
         "distance_classification": DistanceClassificationTask,
         "emission_lines": EmissionLineTask,
+        "source_classification": SourceClassificationTask,
     }
 
     if task_type not in TASK_REGISTRY:

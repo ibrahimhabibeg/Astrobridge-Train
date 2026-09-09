@@ -6,6 +6,7 @@ from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
 from . import EvalSample, ModelResponse
 from ..tasks.distance_classification import DistanceClassPromptSpec, DistanceClassificationTask
 from ..tasks.emission_lines import EmissionLinePromptSpec
+from ..tasks.source_classification import SourceClassPromptSpec
 
 def subsample_spectrum(wavelength, flux, num_points=100):
     wavelength = np.array(wavelength).flatten()
@@ -78,6 +79,17 @@ class BaseQwenTextResponder:
             "EMISSION LINES: NONE"
         )
 
+    def _build_source_prompt(self, spec: SourceClassPromptSpec, w_str: str, f_str: str, num_points: int) -> str:
+        return (
+            "Briefly analyze and describe the given spectrum and then classify the astronomical source into one of the following categories.\n\n"
+            f"Allowed categories:\n{spec.options_text}\n\n"
+            f"Spectrum Data ({num_points} evenly spaced points):\n"
+            f"Wavelength (Å): [{w_str}]\n"
+            f"Flux: [{f_str}]\n\n"
+            "You MUST conclude your response with the exact format:\n"
+            "FINAL ANSWER: [Category]"
+        )
+
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
         if not hasattr(task, "get_prompt_spec") and hasattr(task, "format_options"):
             task = DistanceClassificationTask(task)
@@ -91,6 +103,8 @@ class BaseQwenTextResponder:
                 prompt = self._build_distance_prompt(spec, w_str, f_str, self._num_points)
             elif isinstance(spec, EmissionLinePromptSpec):
                 prompt = self._build_emission_prompt(spec, w_str, f_str, self._num_points)
+            elif isinstance(spec, SourceClassPromptSpec):
+                prompt = self._build_source_prompt(spec, w_str, f_str, self._num_points)
             else:
                 prompt = task.default_prompt(wavelength_str=w_str, flux_str=f_str)
             

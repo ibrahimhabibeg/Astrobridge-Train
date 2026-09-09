@@ -5,6 +5,7 @@ from . import EvalSample, ModelResponse
 from .utils import render_spectrum_plot
 from ..tasks.distance_classification import DistanceClassPromptSpec, DistanceClassificationTask
 from ..tasks.emission_lines import EmissionLinePromptSpec
+from ..tasks.source_classification import SourceClassPromptSpec
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -54,6 +55,14 @@ class GeminiResponder:
             "EMISSION LINES: NONE"
         )
 
+    def _build_source_prompt(self, spec: SourceClassPromptSpec) -> str:
+        return (
+            "Briefly analyze and describe the given spectrum and then classify the astronomical source into one of the following categories.\n\n"
+            f"Allowed categories:\n{spec.options_text}\n\n"
+            "You MUST conclude your response with the exact format:\n"
+            "FINAL ANSWER: [Category]"
+        )
+
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
         if not hasattr(task, "get_prompt_spec") and hasattr(task, "format_options"):
             task = DistanceClassificationTask(task)
@@ -63,6 +72,8 @@ class GeminiResponder:
             prompt = self._build_distance_prompt(spec)
         elif isinstance(spec, EmissionLinePromptSpec):
             prompt = self._build_emission_prompt(spec)
+        elif isinstance(spec, SourceClassPromptSpec):
+            prompt = self._build_source_prompt(spec)
         else:
             prompt = task.default_prompt()
         

@@ -2,6 +2,7 @@ from typing import List, Any
 from . import EvalSample, ModelResponse
 from ..tasks.distance_classification import DistanceClassPromptSpec, DistanceClassificationTask
 from ..tasks.emission_lines import EmissionLinePromptSpec
+from ..tasks.source_classification import SourceClassPromptSpec
 import torch
 from huggingface_hub import hf_hub_download
 from peft import PeftModel
@@ -59,15 +60,30 @@ class AstroBridgeResponder:
             f"{spec.options_text}. "
             "Think step-by-step, but you MUST conclude with the exact phrase 'FINAL ANSWER: [Letter]'"
         )
+        # return (
+        #     "Briefly analyze and describe the given spectrum and then classify the distance of the observed astronomical object into one of the following categories:\n"
+        #     f"{spec.options_text}.\n"
+        #     "You MUST conclude your response with the exact format:\n"
+        #     "FINAL ANSWER: [Letter]"
+        # )
+
 
     def _build_emission_prompt(self, spec: EmissionLinePromptSpec) -> str:
         return (
-            "Analyze and describe the given spectrum and then identify all visible emission lines present in it.\n\n"
+            "Briefly analyze and describe the given spectrum and then identify all visible emission lines present in it.\n\n"
             f"Allowed candidate lines:\n{spec.vocabulary_text}\n\n"
             "You MUST conclude your response with the exact format:\n"
             "EMISSION LINES: line1, line2, ...\n"
             "If no emission lines from the list are present, write:\n"
             "EMISSION LINES: NONE"
+        )
+
+    def _build_source_prompt(self, spec: SourceClassPromptSpec) -> str:
+        return (
+            "Briefly analyze and describe the given spectrum and then classify the astronomical source into one of the following categories.\n\n"
+            f"Allowed categories:\n{spec.options_text}\n\n"
+            "You MUST conclude your response with the exact format:\n"
+            "FINAL ANSWER: [Category]"
         )
 
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
@@ -80,6 +96,8 @@ class AstroBridgeResponder:
             question = self._build_distance_prompt(spec)
         elif isinstance(spec, EmissionLinePromptSpec):
             question = self._build_emission_prompt(spec)
+        elif isinstance(spec, SourceClassPromptSpec):
+            question = self._build_source_prompt(spec)
         else:
             question = task.default_prompt()
 

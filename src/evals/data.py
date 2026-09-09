@@ -45,3 +45,32 @@ def load_test_spectra_emission_lines() -> pd.DataFrame:
     df_test_lines = df_spectra[df_spectra["wiki_entity_id"].isin(valid_ids)]
     print(f"Found {len(df_test_lines)} test spectra matching emission line ground truth.")
     return df_test_lines
+
+def load_source_classification_ground_truth() -> pd.DataFrame:
+    """
+    Downloads the AstroBridge-Data extracted types CSV from HuggingFace.
+    """
+    print("Loading source classification ground truth...")
+    csv_path = hf_hub_download(
+        repo_id="UniverseTBD/AstroBridge-Data",
+        filename="observations/spectra/extracted_types.csv",
+        repo_type="dataset"
+    )
+    df = pd.read_csv(csv_path)
+    return df
+
+def load_test_spectra_source_classification(active_classes_keys: list[str]) -> pd.DataFrame:
+    """
+    Downloads spectra and extracted types, filters to the 'test' split,
+    keeps only samples matching active classes, and merges the class labels.
+    """
+    df_spectra = load_test_spectra()
+    df_types = load_source_classification_ground_truth()
+    
+    # Filter to active classes
+    df_types = df_types[df_types['class'].isin(active_classes_keys)]
+    
+    # Merge
+    df_test_types = df_spectra.merge(df_types[['wiki_entity_id', 'class']], on='wiki_entity_id', how='inner')
+    print(f"Found {len(df_test_types)} test spectra matching active source classes.")
+    return df_test_types

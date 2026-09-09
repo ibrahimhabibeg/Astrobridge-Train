@@ -8,9 +8,15 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from .buckets import BucketScheme
 from .data import load_test_spectra
 
+class MockScheme:
+    def __init__(self, labels):
+        self.labels = labels
+
 def compute_and_save_metrics(results_dir: str, task_or_scheme: Any):
     if hasattr(task_or_scheme, "name") and task_or_scheme.name == "emission_lines":
         _compute_emission_line_metrics(results_dir, task_or_scheme)
+    elif hasattr(task_or_scheme, "name") and task_or_scheme.name == "source_classification":
+        _compute_classification_metrics(results_dir, MockScheme(task_or_scheme.categories))
     else:
         scheme = getattr(task_or_scheme, "scheme", task_or_scheme)
         _compute_classification_metrics(results_dir, scheme)

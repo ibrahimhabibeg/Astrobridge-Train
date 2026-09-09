@@ -5,6 +5,7 @@ from . import EvalSample, ModelResponse
 from .utils import render_spectrum_plot
 from ..tasks.distance_classification import DistanceClassPromptSpec, DistanceClassificationTask
 from ..tasks.emission_lines import EmissionLinePromptSpec
+from ..tasks.source_classification import SourceClassPromptSpec
 from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
 import torch
 from PIL import Image
@@ -34,10 +35,16 @@ class BaseQwenResponder:
         }
 
     def _build_distance_prompt(self, spec: DistanceClassPromptSpec) -> str:
+        # return (
+        #     "Classify the redshift (z) of the astronomical spectrum shown in the image.\n\n"
+        #     f"Categories:\n{spec.options_multiline}\n\n"
+        #     "Provide exactly ONE sentence of analysis, then on a new line write 'FINAL ANSWER: <label>'."
+        # )
         return (
-            "Classify the redshift (z) of the astronomical spectrum shown in the image.\n\n"
-            f"Categories:\n{spec.options_multiline}\n\n"
-            "Provide exactly ONE sentence of analysis, then on a new line write 'FINAL ANSWER: <label>'."
+            "Briefly analyze and describe the given spectrum and then classify the distance of the observed astronomical object into one of the following categories:\n"
+            f"{spec.options_text}.\n"
+            "You MUST conclude your response with the exact format:\n"
+            "FINAL ANSWER: [Letter]"
         )
 
     def _build_emission_prompt(self, spec: EmissionLinePromptSpec) -> str:
@@ -50,6 +57,14 @@ class BaseQwenResponder:
             "EMISSION LINES: NONE"
         )
 
+    def _build_source_prompt(self, spec: SourceClassPromptSpec) -> str:
+        return (
+            "Briefly analyze and describe the given spectrum and then classify the astronomical source into one of the following categories.\n\n"
+            f"Allowed categories:\n{spec.options_text}\n\n"
+            "You MUST conclude your response with the exact format:\n"
+            "FINAL ANSWER: [Category]"
+        )
+
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
         if not hasattr(task, "get_prompt_spec") and hasattr(task, "format_options"):
             task = DistanceClassificationTask(task)
@@ -59,6 +74,8 @@ class BaseQwenResponder:
             prompt = self._build_distance_prompt(spec)
         elif isinstance(spec, EmissionLinePromptSpec):
             prompt = self._build_emission_prompt(spec)
+        elif isinstance(spec, SourceClassPromptSpec):
+            prompt = self._build_source_prompt(spec)
         else:
             prompt = task.default_prompt()
 
