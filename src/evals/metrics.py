@@ -6,6 +6,7 @@ from typing import Any
 from sklearn.metrics import accuracy_score, mean_absolute_error, classification_report, confusion_matrix
 from sklearn.preprocessing import MultiLabelBinarizer
 from .buckets import BucketScheme
+from .data import load_test_spectra
 
 def compute_and_save_metrics(results_dir: str, task_or_scheme: Any):
     if hasattr(task_or_scheme, "name") and task_or_scheme.name == "emission_lines":
@@ -21,20 +22,14 @@ def _load_metadata(results_dir: str) -> dict:
             return json.load(f)
     return {}
 
-def _compute_classification_metrics(results_dir: str, scheme: BucketScheme):
-    results_path = os.path.join(results_dir, "results.jsonl")
-    if not os.path.exists(results_path): return
+def _calculate_classification_metrics_for_df(df_subset, scheme: BucketScheme):
+    if df_subset.empty: return None
         
-    df = pd.read_json(results_path, lines=True)
-    if df.empty: return
-        
-    df["pred"] = df.get("model_answer", df.get("parsed", "UNKNOWN")).fillna("UNKNOWN")
+    valid_mask = df_subset["pred"].isin(scheme.labels)
+    format_errors = len(df_subset) - valid_mask.sum()
+    df_valid = df_subset[valid_mask]
     
-    valid_mask = df["pred"].isin(scheme.labels)
-    format_errors = len(df) - valid_mask.sum()
-    df_valid = df[valid_mask]
-    
-    if df_valid.empty: return
+    if df_valid.empty: return None
         
     y_true, y_pred = df_valid["correct_answer"], df_valid["pred"]
     
@@ -52,11 +47,10 @@ def _compute_classification_metrics(results_dir: str, scheme: BucketScheme):
         per_class[label] = report[label]
         per_class[label]["f1"] = per_class[label].pop("f1-score", 0.0)
 
-    metrics = {
-        "metadata": _load_metadata(results_dir),
-        "total_samples": len(df),
+    return {
+        "total_samples": len(df_subset),
         "format_errors": int(format_errors),
-        "format_error_rate": float(format_errors / len(df)),
+        "format_error_rate": float(format_errors / len(df_subset)),
         "global_accuracy": acc,
         "mean_absolute_error": mae,
         "macro_f1": report["macro avg"]["f1-score"],
@@ -64,11 +58,42 @@ def _compute_classification_metrics(results_dir: str, scheme: BucketScheme):
         "confusion_matrix": cm_dict,
         "per_class_metrics": per_class
     }
+
+def _compute_classification_metrics(results_dir: str, scheme: BucketScheme):
+    results_path = os.path.join(results_dir, "results.jsonl")
+    if not os.path.exists(results_path): return
+        
+    df = pd.read_json(results_path, lines=True)
+    if df.empty: return
+        
+    df["pred"] = df.get("model_answer", df.get("parsed", "UNKNOWN")).fillna("UNKNOWN")    
     
-    print(f"\n=== Classification Metrics ===")
-    print(f"Total Samples: {len(df)} | Format Errors: {format_errors}")
-    print(f"Accuracy: {acc*100:.1f}% | MAE: {mae:.3f} classes | Macro F1: {metrics['macro_f1']:.3f}")
+    test_spectra = load_test_spectra()
+    df = df.merge(test_spectra[["wiki_entity_id", "survey"]], on="wiki_entity_id", how="left")
     
+    overall_metrics = _calculate_classification_metrics_for_df(df, scheme)
+    if not overall_metrics: return
+
+    metrics = {
+        "metadata": _load_metadata(results_dir),
+        **overall_metrics
+    }
+    
+    print(f"\n=== Classification Metrics (Overall) ===")
+    print(f"Total Samples: {overall_metrics['total_samples']} | Format Errors: {overall_metrics['format_errors']}")
+    print(f"Accuracy: {overall_metrics['global_accuracy']*100:.1f}% | MAE: {overall_metrics['mean_absolute_error']:.3f} classes | Macro F1: {overall_metrics['macro_f1']:.3f}")
+    
+    if "survey" in df.columns:
+        metrics["by_survey"] = {}
+        for survey in sorted(df["survey"].dropna().unique()):
+            survey_df = df[df["survey"] == survey]
+            survey_metrics = _calculate_classification_metrics_for_df(survey_df, scheme)
+            if survey_metrics:
+                metrics["by_survey"][survey] = survey_metrics
+                print(f"\n=== Classification Metrics ({survey.upper()}) ===")
+                print(f"Total Samples: {survey_metrics['total_samples']} | Format Errors: {survey_metrics['format_errors']}")
+                print(f"Accuracy: {survey_metrics['global_accuracy']*100:.1f}% | MAE: {survey_metrics['mean_absolute_error']:.3f} classes | Macro F1: {survey_metrics['macro_f1']:.3f}")
+
     with open(os.path.join(results_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=4)
 
