@@ -8,8 +8,8 @@ task:
       BROADLINE: Broadline
 
 run:
-  responder_type: hf_vision
-  hf_model_id: llava-hf/llava-v1.6-mistral-7b-hf
+  responder_type: hf_text
+  hf_model_id: ibm-granite/granite-4.2-3b
   base_llm_id: Qwen/Qwen3.5-9B
   gemini_model: gemini-3.8-flash
   gemini_num_workers: 4
