@@ -41,12 +41,16 @@ def get_responder(config: dict, device: str) -> Responder:
     from .base_qwen import BaseQwenResponder
     from .base_qwen_text import BaseQwenTextResponder
     from .gemini import GeminiResponder
+    from .hf_vision import HFVisionResponder
+    from .hf_text import HFTextResponder
 
     RESPONDER_REGISTRY = {
         "astrobridge": AstroBridgeResponder,
         "base_qwen": BaseQwenResponder,
         "base_qwen_text": BaseQwenTextResponder,
         "gemini": GeminiResponder,
+        "hf_vision": HFVisionResponder,
+        "hf_text": HFTextResponder,
     }
 
     responder_id = config.get("responder_type")

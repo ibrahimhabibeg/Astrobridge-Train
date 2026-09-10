@@ -1,6 +1,5 @@
 import re
-from dataclasses import dataclass
-from typing import List, Dict, Any, Union, Optional
+from typing import List, Dict, Any, Optional
 import pandas as pd
 
 from ..data import load_emission_line_ground_truth
@@ -21,18 +20,12 @@ CANONICAL_LINES: List[str] = [
 
 # Mapping from CSV LINE_NAME to canonical line name
 CSV_TO_CANONICAL: Dict[str, str] = {
-    # Lyα
-    "LYALPHA": "Lyα",
-    # O I 1304
-    "OI_1304": "O I 1304",
     # [O II] 3727
     "OII_3726": "[O II] 3727",
     "OII_3729": "[O II] 3727",
     # Hγ
     "HGAMMA": "Hγ",
     "HGAMMA_BROAD": "Hγ",
-    # [O III] 4363
-    "OIII_4363": "[O III] 4363",
     # Hβ
     "HBETA": "Hβ",
     "HBETA_BROAD": "Hβ",
@@ -48,13 +41,16 @@ CSV_TO_CANONICAL: Dict[str, str] = {
     # [S II] 6720
     "SII_6716": "[S II] 6720",
     "SII_6731": "[S II] 6720",
-    # [O II] 7325
+}
+
+# Inactive line mappings (kept for reference, filtered out below)
+_INACTIVE_CSV_MAPPINGS: Dict[str, str] = {
+    "LYALPHA": "Lyα",
+    "OI_1304": "O I 1304",
+    "OIII_4363": "[O III] 4363",
     "OII_7320": "[O II] 7325",
     "OII_7330": "[O II] 7325",
 }
-
-# Filter out inactive lines
-CSV_TO_CANONICAL = {k: v for k, v in CSV_TO_CANONICAL.items() if v in CANONICAL_LINES}
 
 
 def clean_key(s: str) -> str:
@@ -81,14 +77,6 @@ def _build_alias_map() -> Dict[str, str]:
         alias_map[clean_key(csv_name)] = canonical
 
     manual_aliases: Dict[str, str] = {
-        # Lyα
-        "lymanalpha": "Lyα",
-        "lyalpha": "Lyα",
-        "lymana": "Lyα",
-        "lya": "Lyα",
-        "lya1216": "Lyα",
-        "lyalpha1216": "Lyα",
-        "1216": "Lyα",
         # Hα
         "halpha": "Hα",
         "ha": "Hα",
@@ -130,19 +118,6 @@ def _build_alias_map() -> Dict[str, str]:
         "sii6731": "[S II] 6720",
         "6716": "[S II] 6720",
         "6731": "[S II] 6720",
-        # [O III] 4363
-        "oiii4363": "[O III] 4363",
-        "4363": "[O III] 4363",
-        # [O I] 1304
-        "oi1304": "O I 1304",
-        "1304": "O I 1304",
-        # [O II] 7325
-        "oii7325": "[O II] 7325",
-        "oii7320": "[O II] 7325",
-        "oii7330": "[O II] 7325",
-        "7320": "[O II] 7325",
-        "7330": "[O II] 7325",
-        "7325": "[O II] 7325",
     }
 
     for k, v in manual_aliases.items():
@@ -155,24 +130,12 @@ def _build_alias_map() -> Dict[str, str]:
 CLEAN_TO_CANONICAL = _build_alias_map()
 
 
-@dataclass
-class EmissionLinePromptSpec:
-    canonical_lines: List[str]
-    output_format_tag: str
-    vocabulary_text: str
-
-
 class EmissionLineTask:
     name: str = "emission_lines"
 
     def __init__(self, ground_truth_df: Optional[pd.DataFrame] = None, **kwargs):
         self.canonical_lines = list(CANONICAL_LINES)
-        vocab_str = ", ".join(self.canonical_lines)
-        self.spec = EmissionLinePromptSpec(
-            canonical_lines=self.canonical_lines,
-            output_format_tag="EMISSION LINES",
-            vocabulary_text=vocab_str,
-        )
+        self._vocabulary_text = ", ".join(self.canonical_lines)
 
         # Pre-load and group ground truth by wiki_entity_id
         if ground_truth_df is None:
@@ -195,18 +158,32 @@ class EmissionLineTask:
                 ):
                     self.ground_truth_by_id[eid][canonical] = snr
 
-    def get_prompt_spec(self) -> EmissionLinePromptSpec:
-        return self.spec
+    def build_prompt(
+        self, *, image_mode: bool, spectrum_text: Optional[str] = None
+    ) -> str:
+        if image_mode:
+            intro = "Analyze and describe the astronomical spectrum shown in the image and then identify all visible emission lines present in it."
+        elif spectrum_text is not None:
+            intro = "Briefly analyze and describe the following astronomical spectrum data and then identify all visible emission lines present in it."
+        else:
+            intro = "Briefly analyze and describe the given spectrum and then identify all visible emission lines present in it."
 
-    def default_prompt(self, **kwargs) -> str:
-        return (
-            "Identify all visible emission lines present in the spectrum.\n\n"
-            f"Allowed candidate lines:\n{self.spec.vocabulary_text}\n\n"
-            "Think step-by-step, but you MUST conclude on the final line with the exact format:\n"
-            "EMISSION LINES: line1, line2, line3\n"
-            "If no emission lines are visible, conclude with:\n"
+        parts = [
+            intro,
+            f"\n\nAllowed candidate lines:\n{self._vocabulary_text}\n",
+        ]
+
+        if spectrum_text is not None:
+            parts.append(f"\n{spectrum_text}\n")
+
+        parts.append(
+            "\nYou MUST conclude your response with the exact format:\n"
+            "EMISSION LINES: line1, line2, ...\n"
+            "If no emission lines from the list are present, write:\n"
             "EMISSION LINES: NONE"
         )
+
+        return "".join(parts)
 
     def fallback_tag(self) -> str:
         return "\n\nEMISSION LINES: "
@@ -249,9 +226,7 @@ class EmissionLineTask:
         return extracted
 
     def extract_ground_truth(self, item: Any) -> Dict[str, float]:
-        """
-        Returns a dict of {canonical_line_name: max_snr} for the observation.
-        """
+        """Returns a dict of {canonical_line_name: max_snr} for the observation."""
         if isinstance(item, str):
             eid = item
         elif isinstance(item, (dict, pd.Series)):
@@ -260,7 +235,6 @@ class EmissionLineTask:
             raise ValueError(
                 f"Cannot extract ground truth wiki_entity_id from item of type {type(item)}"
             )
-
         return self.ground_truth_by_id.get(eid, {})
 
     def get_config(self) -> Dict[str, Any]:

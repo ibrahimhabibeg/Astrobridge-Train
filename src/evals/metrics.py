@@ -12,14 +12,15 @@ class MockScheme:
     def __init__(self, labels):
         self.labels = labels
 
-def compute_and_save_metrics(results_dir: str, task_or_scheme: Any):
-    if hasattr(task_or_scheme, "name") and task_or_scheme.name == "emission_lines":
-        _compute_emission_line_metrics(results_dir, task_or_scheme)
-    elif hasattr(task_or_scheme, "name") and task_or_scheme.name in ["source_classification", "subclass_classification"]:
-        _compute_classification_metrics(results_dir, MockScheme(task_or_scheme.categories))
+def compute_and_save_metrics(results_dir: str, task: Any):
+    if task.name == "emission_lines":
+        _compute_emission_line_metrics(results_dir, task)
+    elif task.name in ["source_classification", "subclass_classification"]:
+        _compute_classification_metrics(results_dir, MockScheme(task.categories))
+    elif task.name == "distance_classification":
+        _compute_classification_metrics(results_dir, task.scheme)
     else:
-        scheme = getattr(task_or_scheme, "scheme", task_or_scheme)
-        _compute_classification_metrics(results_dir, scheme)
+        raise ValueError(f"Unknown task name for metrics: {task.name}")
 
 def _load_metadata(results_dir: str) -> dict:
     path = os.path.join(results_dir, "metadata.json")
@@ -85,9 +86,12 @@ def _compute_classification_metrics(results_dir: str, scheme: BucketScheme):
         **overall_metrics
     }
     
-    print(f"\n=== Classification Metrics (Overall) ===")
-    print(f"Total Samples: {overall_metrics['total_samples']} | Format Errors: {overall_metrics['format_errors']}")
-    print(f"Accuracy: {overall_metrics['global_accuracy']*100:.1f}% | MAE: {overall_metrics['mean_absolute_error']:.3f} classes | Macro F1: {overall_metrics['macro_f1']:.3f}")
+    def print_metrics(name: str, m: dict):
+        print(f"\n=== Classification Metrics ({name}) ===")
+        print(f"Total Samples: {m['total_samples']} | Format Errors: {m['format_errors']}")
+        print(f"Accuracy: {m['global_accuracy']*100:.1f}% | MAE: {m['mean_absolute_error']:.3f} classes | Macro F1: {m['macro_f1']:.3f}")
+
+    print_metrics("Overall", overall_metrics)
     
     if "survey" in df.columns:
         metrics["by_survey"] = {}
@@ -96,9 +100,7 @@ def _compute_classification_metrics(results_dir: str, scheme: BucketScheme):
             survey_metrics = _calculate_classification_metrics_for_df(survey_df, scheme)
             if survey_metrics:
                 metrics["by_survey"][survey] = survey_metrics
-                print(f"\n=== Classification Metrics ({survey.upper()}) ===")
-                print(f"Total Samples: {survey_metrics['total_samples']} | Format Errors: {survey_metrics['format_errors']}")
-                print(f"Accuracy: {survey_metrics['global_accuracy']*100:.1f}% | MAE: {survey_metrics['mean_absolute_error']:.3f} classes | Macro F1: {survey_metrics['macro_f1']:.3f}")
+                print_metrics(survey.upper(), survey_metrics)
 
     with open(os.path.join(results_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=4)

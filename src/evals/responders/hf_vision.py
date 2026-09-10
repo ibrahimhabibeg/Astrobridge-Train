@@ -1,24 +1,32 @@
+"""Generic HuggingFace vision-language responder.
+
+Works with any HF model that supports the image-text-to-text pipeline
+(e.g. LLaVA, InternVL, Phi-Vision, Pixtral, Idefics, etc.).
+Uses AutoModelForImageTextToText + AutoProcessor instead of a
+model-specific class like Qwen3_5ForConditionalGeneration.
+"""
+
 import io
 from typing import List, Any
 
 import torch
 from PIL import Image
-from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
+from transformers import AutoProcessor, AutoModelForImageTextToText
 
 from . import EvalSample, ModelResponse
 from .fallback import identify_failed_indices, merge_fallback_responses
 from .utils import render_spectrum_plot
 
 
-class BaseQwenResponder:
+class HFVisionResponder:
     def __init__(self, config: dict, device: str):
-        assert "base_llm_id" in config and config["base_llm_id"], "Missing 'base_llm_id' in config"
-        self._model_id = config["base_llm_id"]
+        assert "hf_model_id" in config and config["hf_model_id"], "Missing 'hf_model_id' in config"
+        self._model_id = config["hf_model_id"]
         self._max_tokens = config.get("max_tokens", 2048)
         self._fallback_max_tokens = config.get("fallback_max_tokens", 128)
         self._device = device
         self._processor = AutoProcessor.from_pretrained(self._model_id, trust_remote_code=True)
-        self._model = Qwen3_5ForConditionalGeneration.from_pretrained(
+        self._model = AutoModelForImageTextToText.from_pretrained(
             self._model_id,
             device_map="auto",
             torch_dtype=torch.bfloat16,
@@ -27,42 +35,38 @@ class BaseQwenResponder:
         self._model.eval()
 
     def get_config(self) -> dict:
-        return {"type": "BaseQwenResponder", "model_id": self._model_id}
+        return {"type": "HFVisionResponder", "model_id": self._model_id}
 
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
         prompt = task.build_prompt(image_mode=True)
 
         messages_batch = []
+        images = []
         for sample in samples:
             png_bytes = render_spectrum_plot(sample.wavelength, sample.flux, mask=sample.mask)
             image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+            images.append(image)
 
+            # Standard HF format: {"type": "image"} is a placeholder;
+            # actual PIL images are passed separately to the processor.
             messages = [
                 {
                     "role": "user",
                     "content": [
-                        {"type": "image", "image": image},
+                        {"type": "image"},
                         {"type": "text", "text": prompt},
                     ],
                 },
-                {"role": "assistant", "content": "Brief analysis:"},
             ]
             messages_batch.append(messages)
 
-        return self._generate_from_messages_batch(messages_batch, task)
+        return self._generate_from_messages_batch(messages_batch, images, task)
 
-    def _generate_from_messages_batch(self, messages_batch, task: Any) -> List[ModelResponse]:
+    def _generate_from_messages_batch(self, messages_batch, images, task: Any) -> List[ModelResponse]:
         texts = [
-            self._processor.apply_chat_template(msgs, continue_final_message=True)
+            self._processor.apply_chat_template(msgs, add_generation_prompt=True)
             for msgs in messages_batch
         ]
-
-        images = []
-        for msgs in messages_batch:
-            for msg in msgs:
-                for content in msg.get("content", []):
-                    if isinstance(content, dict) and content.get("type") == "image":
-                        images.append(content["image"])
 
         self._processor.tokenizer.padding_side = "left"
         if self._processor.tokenizer.pad_token is None:
@@ -114,3 +118,4 @@ class BaseQwenResponder:
             merge_fallback_responses(responses, failed, fb_raw, fallback_tag, task)
 
         return responses
+
