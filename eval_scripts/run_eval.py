@@ -179,25 +179,36 @@ def run_evaluation_remote(config: dict, timestamp_dir: str):
 
 
 @app.local_entrypoint()
-def main(config_path: str, limit: int = None, gemini_model: str = None, gpu: str = None):
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+def main(task: str, responder: str, limit: int = None, gemini_model: str = None, gpu: str = None):
+    with open(task, "r") as f:
+        task_config = yaml.safe_load(f)
+    with open(responder, "r") as f:
+        run_config = yaml.safe_load(f)
 
     if limit is not None:
-        config["run"]["limit"] = limit
-    if gemini_model is not None:
-        config["run"]["gemini_model"] = gemini_model
-    if gpu is not None:
-        config["run"]["gpu"] = gpu
+        run_config["limit"] = limit
+    elif "limit" in task_config and "limit" not in run_config:
+        run_config["limit"] = task_config["limit"]
 
-    run_config = config["run"]
-    suffix = run_config.get("suffix_tag", "eval")
+    if gemini_model is not None:
+        run_config["gemini_model"] = gemini_model
+    if gpu is not None:
+        run_config["gpu"] = gpu
+    if "batch_size" in task_config and "batch_size" not in run_config:
+        run_config["batch_size"] = task_config["batch_size"]
+
+    config = {
+        "task": task_config,
+        "run": run_config
+    }
+
+    suffix = run_config.get("suffix_tag") or task_config.get("suffix_tag") or task_config["name"]
     timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{suffix}")
 
     local_output_dir = os.path.join(os.getcwd(), "eval_results")
     os.makedirs(local_output_dir, exist_ok=True)
 
-    print(f"Starting evaluation from {config_path}. Results -> {timestamp_dir}")
+    print(f"Starting evaluation for task '{task}' with responder '{responder}'. Results -> {timestamp_dir}")
 
     if run_config["responder_type"] == "gemini":
         print("Running Gemini evaluator LOCALLY (bypassing Modal GPU).")
@@ -220,24 +231,25 @@ def main(config_path: str, limit: int = None, gemini_model: str = None, gpu: str
     from evals.tasks import get_task
 
     print("Done generating results! Computing metrics locally...")
-    task = get_task(config["task"]["name"], **config["task"].get("kwargs", {}))
-    compute_and_save_metrics(results_dir, task)
+    task_obj = get_task(config["task"]["name"], **config["task"].get("kwargs", {}))
+    compute_and_save_metrics(results_dir, task_obj)
     print(f"All done! Check {results_dir} for results and metrics.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Unified evaluation script.")
-    parser.add_argument("config", type=str, help="Path to evaluation YAML config.")
+    parser.add_argument("--task", type=str, required=True, help="Path to task YAML config.")
+    parser.add_argument("--responder", type=str, required=True, help="Path to responder YAML config.")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of samples.")
     parser.add_argument("--gemini-model", type=str, default=None, help="Override Gemini model.")
     parser.add_argument("--gpu", type=str, default=None, help="Override GPU type (e.g. A100-80GB, A10G, H100).")
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     # When run directly (not via modal run)
-    with open(args.config, "r") as f:
-        config = yaml.safe_load(f)
-    if config["run"]["responder_type"] == "gemini":
-        main(args.config, args.limit, args.gemini_model, args.gpu)
+    with open(args.responder, "r") as f:
+        run_config = yaml.safe_load(f)
+    if run_config["responder_type"] == "gemini":
+        main(args.task, args.responder, args.limit, args.gemini_model, args.gpu)
     else:
-        print(f"Please use `modal run eval_scripts/run_eval.py --config-path {args.config}` to run on Modal GPUs.")
+        print(f"Please use `modal run eval_scripts/run_eval.py --task {args.task} --responder {args.responder}` to run on Modal GPUs.")
 

@@ -1,0 +1,4 @@
+name: emission_lines
+batch_size: 32
+# limit: 5          # Optional: Limit number of samples to evaluate
+# suffix_tag: dev   # Optional: Custom suffix for the output directory

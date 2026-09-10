@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Local evaluation script — runs everything on the local machine.
 
 Use this instead of run_eval.py when your local device has a GPU.
@@ -130,29 +129,43 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run evaluation locally (assumes local GPU is available)."
     )
-    parser.add_argument("config", type=str, help="Path to evaluation YAML config.")
+    parser.add_argument("--task", type=str, required=True, help="Path to task YAML config.")
+    parser.add_argument("--responder", type=str, required=True, help="Path to responder YAML config.")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of samples.")
     parser.add_argument("--gemini-model", type=str, default=None, help="Override Gemini model.")
     args = parser.parse_args()
 
     dotenv.load_dotenv()
 
-    with open(args.config, "r") as f:
-        config = yaml.safe_load(f)
+    with open(args.task, "r") as f:
+        task_config = yaml.safe_load(f)
+    with open(args.responder, "r") as f:
+        run_config = yaml.safe_load(f)
 
     if args.limit is not None:
-        config["run"]["limit"] = args.limit
-    if args.gemini_model is not None:
-        config["run"]["gemini_model"] = args.gemini_model
+        run_config["limit"] = args.limit
+    elif "limit" in task_config and "limit" not in run_config:
+        run_config["limit"] = task_config["limit"]
 
-    run_config = config["run"]
-    suffix = run_config.get("suffix_tag", "eval")
+    if args.gemini_model is not None:
+        run_config["gemini_model"] = args.gemini_model
+    
+    # Optional: pass batch_size from task config if defined
+    if "batch_size" in task_config and "batch_size" not in run_config:
+        run_config["batch_size"] = task_config["batch_size"]
+
+    config = {
+        "task": task_config,
+        "run": run_config
+    }
+
+    suffix = run_config.get("suffix_tag") or task_config.get("suffix_tag") or task_config["name"]
     timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{suffix}")
 
     output_base = os.path.join(os.getcwd(), "eval_results")
     output_dir = os.path.join(output_base, timestamp_dir)
 
-    print(f"Starting LOCAL evaluation from {args.config}. Results -> {timestamp_dir}")
+    print(f"Starting LOCAL evaluation for task '{args.task}' with responder '{args.responder}'. Results -> {timestamp_dir}")
     run_evaluation(config, output_dir)
 
     print("Computing metrics...")

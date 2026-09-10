@@ -1,0 +1,8 @@
+{
+    "yaml.disableSchemaDetection": [
+        "file:///Users/ibrahimhabib/Desktop/development/Astrobridge-Eval/eval_configs/tasks/source_classification.yaml",
+        "file:///Users/ibrahimhabib/Desktop/development/Astrobridge-Eval/eval_configs/tasks/subclass_classification.yaml",
+        "file:///Users/ibrahimhabib/Desktop/development/Astrobridge-Eval/eval_configs/tasks/emission_lines.yaml",
+        "file:///Users/ibrahimhabib/Desktop/development/Astrobridge-Eval/eval_configs/tasks/distance.yaml"
+    ]
+}

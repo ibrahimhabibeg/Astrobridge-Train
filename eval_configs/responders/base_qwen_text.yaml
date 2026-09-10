@@ -1,0 +1,6 @@
+responder_type: base_qwen_text
+base_llm_id: Qwen/Qwen3.5-9B
+num_points: 100
+max_tokens: 2048
+fallback_max_tokens: 128
+gpu: A100-80GB
