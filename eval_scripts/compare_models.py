@@ -1,24 +1,33 @@
+#!/usr/bin/env python
+"""Compare two models with a paired bootstrap test.
+
+Usage:
+    uv run eval_scripts/compare_models.py \
+        --baseline eval_results/20260910_run1 \
+        --treatment eval_results/20260910_run2 \
+        --metric macro-f1
+"""
+
 import argparse
 import os
-import json
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, f1_score
 from tqdm import tqdm
 
-def calculate_metric(y_true, y_pred, metric_name):
-    if metric_name == "accuracy":
-        return accuracy_score(y_true, y_pred)
-    elif metric_name == "macro-f1":
-        return f1_score(y_true, y_pred, average='macro', zero_division=0)
-    else:
-        raise ValueError(f"Unknown metric: {metric_name}")
+from evals.metrics.classification import accuracy, macro_f1
+
+
+METRIC_FUNCTIONS = {
+    "accuracy": accuracy,
+    "macro-f1": macro_f1,
+}
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run a paired bootstrap test to compare two models.")
     parser.add_argument("--baseline", type=str, required=True, help="Path to the baseline model's results directory.")
     parser.add_argument("--treatment", type=str, required=True, help="Path to the treatment (fine-tuned) model's results directory.")
-    parser.add_argument("--metric", type=str, choices=["accuracy", "macro-f1"], default="macro-f1", help="Evaluation metric to use.")
+    parser.add_argument("--metric", type=str, choices=list(METRIC_FUNCTIONS.keys()), default="macro-f1", help="Evaluation metric to use.")
     parser.add_argument("--unknown-strategy", type=str, choices=["penalize", "drop"], default="penalize", help="How to handle UNKNOWN outputs.")
     parser.add_argument("--n-bootstraps", type=int, default=10000, help="Number of bootstrap resamples.")
     
@@ -54,42 +63,46 @@ def main():
         
     print(f"Loaded {len(df)} aligned predictions.")
     
-    scheme_base = df['scheme_base'].iloc[0]
-    scheme_treat = df['scheme_treat'].iloc[0]
-    if scheme_base != scheme_treat:
-        print(f"WARNING: Schemes do not match! Baseline: {scheme_base}, Treatment: {scheme_treat}")
-        
-    # Stats on UNKNOWNs
-    base_unknowns = (df['model_answer_base'] == 'UNKNOWN').sum()
-    treat_unknowns = (df['model_answer_treat'] == 'UNKNOWN').sum()
+    # Stats on format errors (None / UNKNOWN predictions)
+    base_unknowns = (df['model_answer_base'].isna() | (df['model_answer_base'] == 'UNKNOWN')).sum()
+    treat_unknowns = (df['model_answer_treat'].isna() | (df['model_answer_treat'] == 'UNKNOWN')).sum()
     
     print("\n--- Formatting Statistics ---")
-    print(f"Baseline UNKNOWNs:  {base_unknowns} / {len(df)} ({(base_unknowns/len(df))*100:.2f}%)")
-    print(f"Treatment UNKNOWNs: {treat_unknowns} / {len(df)} ({(treat_unknowns/len(df))*100:.2f}%)")
+    print(f"Baseline format errors:  {base_unknowns} / {len(df)} ({(base_unknowns/len(df))*100:.2f}%)")
+    print(f"Treatment format errors: {treat_unknowns} / {len(df)} ({(treat_unknowns/len(df))*100:.2f}%)")
     
-    # Handle UNKNOWNs based on strategy
+    # Handle format errors based on strategy
     if args.unknown_strategy == "drop":
-        df = df[(df['model_answer_base'] != 'UNKNOWN') & (df['model_answer_treat'] != 'UNKNOWN')]
+        mask = (
+            df['model_answer_base'].notna() & (df['model_answer_base'] != 'UNKNOWN') &
+            df['model_answer_treat'].notna() & (df['model_answer_treat'] != 'UNKNOWN')
+        )
+        df = df[mask]
         print(f"\nStrategy 'drop' applied. Kept {len(df)} clean intersecting rows.")
     else:
-        print("\nStrategy 'penalize' applied. UNKNOWNs are kept and scored as incorrect.")
+        # Fill None with UNKNOWN so metric functions can handle them
+        df['model_answer_base'] = df['model_answer_base'].fillna('UNKNOWN')
+        df['model_answer_treat'] = df['model_answer_treat'].fillna('UNKNOWN')
+        print("\nStrategy 'penalize' applied. Format errors are kept and scored as incorrect.")
         
     if len(df) == 0:
-        print("Error: No data left to evaluate after dropping UNKNOWNs.")
+        print("Error: No data left to evaluate after dropping format errors.")
         return
 
     # Extract numpy arrays for fast evaluation
-    # We use correct_answer_base as the ground truth (should be identical to correct_answer_treat)
     y_true = df['correct_answer_base'].values
     y_base = df['model_answer_base'].values
     y_treat = df['model_answer_treat'].values
     
-    # Check that ground truths actually match (sanity check)
+    # Sanity check: ground truths must match
     assert (df['correct_answer_base'] == df['correct_answer_treat']).all(), "Ground truth labels disagree!"
 
+    # Select metric function
+    metric_fn = METRIC_FUNCTIONS[args.metric]
+
     # 1. Calculate observed metrics
-    score_base = calculate_metric(y_true, y_base, args.metric)
-    score_treat = calculate_metric(y_true, y_treat, args.metric)
+    score_base = metric_fn(y_true, y_base)
+    score_treat = metric_fn(y_true, y_treat)
     delta_obs = score_treat - score_base
     
     print(f"\n--- Observed Performance ({args.metric}) ---")
@@ -97,30 +110,26 @@ def main():
     print(f"Treatment Score: {score_treat:.4f}")
     print(f"Observed Delta: {delta_obs:+.4f}")
 
-    # 2. Bootstrap Loop
+    # 2. Bootstrap loop
     print(f"\nRunning {args.n_bootstraps} paired bootstrap resamples...")
     deltas = np.zeros(args.n_bootstraps)
     n = len(y_true)
     
-    # We set a seed for reproducibility
     np.random.seed(42)
     
     for i in tqdm(range(args.n_bootstraps), desc="Bootstrapping", leave=False):
-        # Sample indices with replacement
         indices = np.random.choice(n, size=n, replace=True)
         
         y_true_boot = y_true[indices]
         y_base_boot = y_base[indices]
         y_treat_boot = y_treat[indices]
         
-        b_score = calculate_metric(y_true_boot, y_base_boot, args.metric)
-        t_score = calculate_metric(y_true_boot, y_treat_boot, args.metric)
+        b_score = metric_fn(y_true_boot, y_base_boot)
+        t_score = metric_fn(y_true_boot, y_treat_boot)
         
         deltas[i] = t_score - b_score
         
-    # 3. P-Value and Confidence Interval
-    # Null hypothesis: Treatment <= Baseline (delta <= 0)
-    # Empirical p-value is the proportion of bootstraps where treatment was NOT better
+    # 3. P-value and confidence interval
     p_value = np.mean(deltas <= 0)
     
     ci_lower = np.percentile(deltas, 2.5)

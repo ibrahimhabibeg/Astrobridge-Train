@@ -3,9 +3,6 @@ import sys
 import json
 import argparse
 
-# Ensure src is in the python path
-sys.path.insert(0, os.path.join(os.getcwd(), "src"))
-
 from evals.tasks import get_task
 from evals.metrics import compute_and_save_metrics
 
@@ -43,6 +40,8 @@ def main():
         # Check old metadata format vs new format
         scheme_info = task_info.get("bucket_scheme", {})
         scheme = scheme_info.get("name") if isinstance(scheme_info, dict) else metadata.get("run_config", {}).get("bucket_scheme", "3-group")
+        # Metadata stores descriptive name like "3-group (A-C)" — extract the ID prefix
+        scheme = scheme.split(" ")[0] if scheme else "3-group"
         task = get_task(task_name, scheme=scheme)
     elif task_name in ["source_classification", "subclass_classification"]:
         active_classes = task_info.get("active_classes", {})
