@@ -197,9 +197,6 @@ def main(config_path: str, limit: int = None, gemini_model: str = None, gpu: str
     local_output_dir = os.path.join(os.getcwd(), "eval_results")
     os.makedirs(local_output_dir, exist_ok=True)
 
-    import sys
-    sys.path.insert(0, os.path.join(os.getcwd(), "src"))
-
     print(f"Starting evaluation from {config_path}. Results -> {timestamp_dir}")
 
     if run_config["responder_type"] == "gemini":
