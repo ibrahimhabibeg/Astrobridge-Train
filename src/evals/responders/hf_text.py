@@ -12,7 +12,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from . import EvalSample, ModelResponse
 from .fallback import identify_failed_indices, merge_fallback_responses
-from .base_qwen_text import subsample_spectrum, format_spectrum_text
+from .utils import subsample_spectrum, format_spectrum_text
 
 
 class HFTextResponder:

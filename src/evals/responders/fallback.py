@@ -1,8 +1,7 @@
 """Shared fallback/retry utilities for responders.
 
-All local responders (astrobridge, base_qwen, base_qwen_text) share the same
-two-pass retry pattern: run initial generation -> identify unparsed responses ->
-re-prompt with the task's fallback_tag appended -> merge results back.
+All local responders share the same two-pass retry pattern: run initial generation -> 
+identify unparsed responses -> re-prompt with the task's fallback_tag appended -> merge results back.
 """
 
 from __future__ import annotations
