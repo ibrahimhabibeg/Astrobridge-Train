@@ -11,7 +11,7 @@ from evals.metrics import compute_and_save_metrics
 
 def main():
     parser = argparse.ArgumentParser(description="Recompute metrics for an evaluation run.")
-    parser.add_argument("results_dir", type=str, help="Path to the results directory (e.g. eval_results/20260907_133755_final_gemini_emission_lines)")
+    parser.add_argument("results_dir", type=str, help="Path to the results directory (e.g. eval_results/20260907_133755_distance_eval)")
     args = parser.parse_args()
 
     results_dir = args.results_dir
@@ -29,7 +29,9 @@ def main():
         metadata = json.load(f)
 
     # Determine the task
-    task_name = metadata.get("task", {}).get("task_name")
+    task_info = metadata.get("task", {})
+    task_name = task_info.get("task_name")
+    
     if not task_name:
         # Fallback if task_name is not in metadata
         print("Warning: Could not determine task_name from metadata.json.")
@@ -38,9 +40,13 @@ def main():
     print(f"Detected task: {task_name}")
 
     if task_name == "distance_classification":
-        # Need to know bucket scheme
-        scheme = metadata.get("run_config", {}).get("bucket_scheme", "log_buckets")
+        # Check old metadata format vs new format
+        scheme_info = task_info.get("bucket_scheme", {})
+        scheme = scheme_info.get("name") if isinstance(scheme_info, dict) else metadata.get("run_config", {}).get("bucket_scheme", "3-group")
         task = get_task(task_name, scheme=scheme)
+    elif task_name in ["source_classification", "subclass_classification"]:
+        active_classes = task_info.get("active_classes", {})
+        task = get_task(task_name, active_classes=active_classes)
     else:
         task = get_task(task_name)
 
@@ -50,4 +56,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

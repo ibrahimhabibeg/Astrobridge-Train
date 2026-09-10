@@ -1,92 +1,42 @@
 import io
-import re
 from typing import List, Any
-from . import EvalSample, ModelResponse
-from .utils import render_spectrum_plot
-from ..tasks.distance_classification import DistanceClassPromptSpec, DistanceClassificationTask
-from ..tasks.emission_lines import EmissionLinePromptSpec
-from ..tasks.source_classification import SourceClassPromptSpec
-from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
+
 import torch
 from PIL import Image
+from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
+
+from . import EvalSample, ModelResponse
+from .fallback import identify_failed_indices, merge_fallback_responses
+from .utils import render_spectrum_plot
+
 
 class BaseQwenResponder:
     def __init__(self, config: dict, device: str):
         assert "base_llm_id" in config and config["base_llm_id"], "Missing 'base_llm_id' in config"
-        assert "max_tokens" in config, "Missing 'max_tokens' in config"
-        assert "fallback_max_tokens" in config, "Missing 'fallback_max_tokens' in config"
         self._model_id = config["base_llm_id"]
-        self._max_tokens = config["max_tokens"]
-        self._fallback_max_tokens = config["fallback_max_tokens"]
+        self._max_tokens = config.get("max_tokens", 2048)
+        self._fallback_max_tokens = config.get("fallback_max_tokens", 128)
         self._device = device
         self._processor = AutoProcessor.from_pretrained(self._model_id, trust_remote_code=True)
         self._model = Qwen3_5ForConditionalGeneration.from_pretrained(
-            self._model_id, 
+            self._model_id,
             device_map="auto",
             torch_dtype=torch.bfloat16,
-            trust_remote_code=True
+            trust_remote_code=True,
         )
         self._model.eval()
 
     def get_config(self) -> dict:
-        return {
-            "type": "BaseQwenResponder",
-            "model_id": self._model_id
-        }
-
-    def _build_distance_prompt(self, spec: DistanceClassPromptSpec) -> str:
-        # return (
-        #     "Classify the redshift (z) of the astronomical spectrum shown in the image.\n\n"
-        #     f"Categories:\n{spec.options_multiline}\n\n"
-        #     "Provide exactly ONE sentence of analysis, then on a new line write 'FINAL ANSWER: <label>'."
-        # )
-        return (
-            "Briefly analyze and describe the given spectrum and then classify the distance of the observed astronomical object into one of the following categories:\n"
-            f"{spec.options_text}.\n"
-            "You MUST conclude your response with the exact format:\n"
-            "FINAL ANSWER: [Letter]"
-        )
-
-    def _build_emission_prompt(self, spec: EmissionLinePromptSpec) -> str:
-        return (
-            "Analyze and describe the astronomical spectrum shown in the image and then identify all visible emission lines present in it.\n\n"
-            f"Allowed candidate lines:\n{spec.vocabulary_text}\n\n"
-            "You MUST conclude your response with the exact format:\n"
-            "EMISSION LINES: line1, line2, ...\n"
-            "If no emission lines from the list are present, write:\n"
-            "EMISSION LINES: NONE"
-        )
-
-    def _build_source_prompt(self, spec: SourceClassPromptSpec) -> str:
-        return (
-            "Briefly analyze and describe the given spectrum and then classify the astronomical source into one of the following categories.\n\n"
-            f"Allowed categories:\n{spec.options_text}\n\n"
-            "You MUST conclude your response with the exact format:\n"
-            "FINAL ANSWER: [Category]"
-        )
+        return {"type": "BaseQwenResponder", "model_id": self._model_id}
 
     def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
-        if not hasattr(task, "get_prompt_spec") and hasattr(task, "format_options"):
-            task = DistanceClassificationTask(task)
-
-        spec = task.get_prompt_spec()
-        if isinstance(spec, DistanceClassPromptSpec):
-            prompt = self._build_distance_prompt(spec)
-        elif isinstance(spec, EmissionLinePromptSpec):
-            prompt = self._build_emission_prompt(spec)
-        elif isinstance(spec, SourceClassPromptSpec):
-            prompt = self._build_source_prompt(spec)
-        else:
-            prompt = task.default_prompt()
+        prompt = task.build_prompt(image_mode=True)
 
         messages_batch = []
         for sample in samples:
-            png_bytes = render_spectrum_plot(
-                sample.wavelength, sample.flux,
-                mask=sample.mask, survey=sample.survey,
-            )
+            png_bytes = render_spectrum_plot(sample.wavelength, sample.flux, mask=sample.mask)
             image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-            
+
             messages = [
                 {
                     "role": "user",
@@ -95,85 +45,72 @@ class BaseQwenResponder:
                         {"type": "text", "text": prompt},
                     ],
                 },
-                {
-                    "role": "assistant",
-                    "content": "Brief analysis:",
-                },
+                {"role": "assistant", "content": "Brief analysis:"},
             ]
             messages_batch.append(messages)
-            
+
         return self._generate_from_messages_batch(messages_batch, task)
 
-    def _generate_from_messages_batch(self, messages_batch, task: Any) -> List[ModelResponse]:        
-        texts = [self._processor.apply_chat_template(msgs, continue_final_message=True) for msgs in messages_batch]
-                
+    def _generate_from_messages_batch(self, messages_batch, task: Any) -> List[ModelResponse]:
+        texts = [
+            self._processor.apply_chat_template(msgs, continue_final_message=True)
+            for msgs in messages_batch
+        ]
+
         images = []
         for msgs in messages_batch:
             for msg in msgs:
                 for content in msg.get("content", []):
                     if isinstance(content, dict) and content.get("type") == "image":
                         images.append(content["image"])
-        
-        self._processor.tokenizer.padding_side = 'left'
+
+        self._processor.tokenizer.padding_side = "left"
         if self._processor.tokenizer.pad_token is None:
             self._processor.tokenizer.pad_token = self._processor.tokenizer.eos_token
-            
+
         inputs = self._processor(text=texts, images=images, return_tensors="pt", padding=True)
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
-        
+
         with torch.no_grad():
-            output_ids = self._model.generate(
-                **inputs, 
-                max_new_tokens=self._max_tokens,
-                do_sample=False
-            )
-            
-        input_len = inputs['input_ids'].shape[1]
+            output_ids = self._model.generate(**inputs, max_new_tokens=self._max_tokens, do_sample=False)
+
+        input_len = inputs["input_ids"].shape[1]
         generated_ids = output_ids[:, input_len:]
         raw_responses = self._processor.batch_decode(generated_ids, skip_special_tokens=True)
-        
+
         parsed_results = [task.default_parse(r) for r in raw_responses]
 
-        failed_indices = [i for i, p in enumerate(parsed_results) if p is None or p == "UNKNOWN"]
-        fallback_tag = task.fallback_tag() if hasattr(task, "fallback_tag") else ""
-        
-        if failed_indices and fallback_tag:
-            fallback_texts = []
-            fallback_images = []
-            for i in failed_indices:
-                fallback_prompt = texts[i] + raw_responses[i] + fallback_tag
-                fallback_texts.append(fallback_prompt)
-                fallback_images.append(images[i])
-                
-            fallback_inputs = self._processor(text=fallback_texts, images=fallback_images, return_tensors="pt", padding=True)
-            fallback_inputs = {k: v.to(self._device) for k, v in fallback_inputs.items()}
-            
-            with torch.no_grad():
-                fallback_output_ids = self._model.generate(
-                    **fallback_inputs,
-                    max_new_tokens=self._fallback_max_tokens,
-                    do_sample=False
-                )
-                
-            fb_input_len = fallback_inputs['input_ids'].shape[1]
-            fb_generated_ids = fallback_output_ids[:, fb_input_len:]
-            fb_raw_responses = self._processor.batch_decode(fb_generated_ids, skip_special_tokens=True)
-            
-            for idx, f_idx in enumerate(failed_indices):
-                new_raw = raw_responses[f_idx] + fallback_tag + " " + fb_raw_responses[idx]
-                raw_responses[f_idx] = new_raw
-                parsed = task.default_parse(new_raw)
-                if parsed is None or parsed == "UNKNOWN":
-                    if getattr(task, "name", "") == "emission_lines":
-                        parsed = []
-                    else:
-                        parsed = "UNKNOWN"
-                parsed_results[f_idx] = parsed
-        
-        return [
+        responses = [
             ModelResponse(
-                parsed=parsed_results[i] if parsed_results[i] is not None else [], 
+                parsed=p if p is not None else [],
                 raw_text=raw_responses[i],
-                forced_fallback=(i in failed_indices)
-            ) for i in range(len(raw_responses))
+                forced_fallback=False,
+            )
+            for i, p in enumerate(parsed_results)
         ]
+
+        # Fallback pass
+        fallback_tag = task.fallback_tag()
+        failed = identify_failed_indices(responses)
+
+        if failed and fallback_tag:
+            fallback_texts = [texts[i] + raw_responses[i] + fallback_tag for i in failed]
+            fallback_images = [images[i] for i in failed]
+
+            fb_inputs = self._processor(
+                text=fallback_texts, images=fallback_images, return_tensors="pt", padding=True
+            )
+            fb_inputs = {k: v.to(self._device) for k, v in fb_inputs.items()}
+
+            with torch.no_grad():
+                fb_output_ids = self._model.generate(
+                    **fb_inputs, max_new_tokens=self._fallback_max_tokens, do_sample=False
+                )
+
+            fb_input_len = fb_inputs["input_ids"].shape[1]
+            fb_generated = fb_output_ids[:, fb_input_len:]
+            fb_raw = self._processor.batch_decode(fb_generated, skip_special_tokens=True)
+
+            merge_fallback_responses(responses, failed, fb_raw, fallback_tag, task)
+
+        return responses
