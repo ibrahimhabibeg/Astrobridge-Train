@@ -1,11 +1,12 @@
-from typing import Protocol, Any, Dict, List, Optional
-from dataclasses import dataclass
+from typing import Protocol, Any, Dict, Optional
 
 
 class EvalTask(Protocol):
     name: str
 
-    def build_prompt(self, *, image_mode: bool, spectrum_text: Optional[str] = None) -> str:
+    def build_prompt(
+        self, *, image_mode: bool, spectrum_text: Optional[str] = None
+    ) -> str:
         """Build the complete evaluation prompt for this task.
 
         Three calling patterns:
@@ -49,6 +50,8 @@ def get_task(task_type: str, **kwargs) -> EvalTask:
     }
 
     if task_type not in TASK_REGISTRY:
-        raise ValueError(f"Unknown task '{task_type}'. Available tasks: {list(TASK_REGISTRY.keys())}")
+        raise ValueError(
+            f"Unknown task '{task_type}'. Available tasks: {list(TASK_REGISTRY.keys())}"
+        )
 
     return TASK_REGISTRY[task_type](**kwargs)

@@ -1,14 +1,10 @@
 import re
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 import pandas as pd
 
 
 class CategoricalClassificationTask:
-    """Unified task for categorical classification (source type, subclass, etc.).
-
-    Replaces the old SourceClassificationTask and SubclassClassificationTask
-    which were near-identical copies differing only in `name` and `target_column`.
-    """
+    """Unified task for categorical classification (source type, subclass, etc.)."""
 
     def __init__(
         self,
@@ -23,7 +19,9 @@ class CategoricalClassificationTask:
         self.categories = list(self.active_classes.values())
         self._options_text = ", ".join(self.categories)
 
-    def build_prompt(self, *, image_mode: bool, spectrum_text: Optional[str] = None) -> str:
+    def build_prompt(
+        self, *, image_mode: bool, spectrum_text: Optional[str] = None
+    ) -> str:
         parts = [
             "Briefly analyze and describe the given spectrum and then classify "
             "the astronomical source into one of the following categories.\n\n"
@@ -43,9 +41,9 @@ class CategoricalClassificationTask:
     def fallback_tag(self) -> str:
         return "\n\nFINAL ANSWER: "
 
-    def default_parse(self, raw_text: str) -> str:
+    def default_parse(self, raw_text: str) -> Optional[str]:
         if not raw_text:
-            return "UNKNOWN"
+            return None
 
         labels_str = "|".join(self.categories)
         match = re.search(
@@ -56,7 +54,8 @@ class CategoricalClassificationTask:
             for cat in self.categories:
                 if cat.lower() == matched_lower:
                     return cat
-        return "UNKNOWN"
+
+        return None
 
     def extract_ground_truth(self, item: Any) -> str:
         if isinstance(item, str):

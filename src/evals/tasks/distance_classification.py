@@ -14,7 +14,9 @@ class DistanceClassificationTask:
         else:
             self.scheme = scheme
 
-    def build_prompt(self, *, image_mode: bool, spectrum_text: Optional[str] = None) -> str:
+    def build_prompt(
+        self, *, image_mode: bool, spectrum_text: Optional[str] = None
+    ) -> str:
         options = self.scheme.format_options()
 
         if image_mode:
@@ -39,19 +41,24 @@ class DistanceClassificationTask:
             )
             return intro + "'FINAL ANSWER: [Letter]'"
 
-        return intro + "You MUST conclude your response with the exact format:\nFINAL ANSWER: [Letter]"
+        return (
+            intro
+            + "You MUST conclude your response with the exact format:\nFINAL ANSWER: [Letter]"
+        )
 
     def fallback_tag(self) -> str:
         return "\n\nFINAL ANSWER: "
 
-    def default_parse(self, raw_text: str) -> str:
+    def default_parse(self, raw_text: str) -> Optional[str]:
         if not raw_text:
-            return "UNKNOWN"
+            return None
         labels_str = "".join(self.scheme.labels)
-        match = re.search(r"FINAL ANSWER:\s*([" + labels_str + r"])", raw_text, re.IGNORECASE)
+        match = re.search(
+            r"FINAL ANSWER:\s*([" + labels_str + r"])", raw_text, re.IGNORECASE
+        )
         if match:
             return match.group(1).upper()
-        return "UNKNOWN"
+        return None
 
     def extract_ground_truth(self, item: Any) -> str:
         if isinstance(item, (int, float)):
@@ -59,7 +66,9 @@ class DistanceClassificationTask:
         elif isinstance(item, (dict, pd.Series)):
             z = item["Z"]
             return self.scheme.classify(float(z))
-        raise ValueError(f"Cannot extract ground truth Z from item of type {type(item)}")
+        raise ValueError(
+            f"Cannot extract ground truth Z from item of type {type(item)}"
+        )
 
     def get_config(self) -> Dict[str, Any]:
         return {

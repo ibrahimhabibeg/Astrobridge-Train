@@ -162,9 +162,9 @@ class EmissionLineTask:
         self, *, image_mode: bool, spectrum_text: Optional[str] = None
     ) -> str:
         if image_mode:
-            intro = "Analyze and describe the astronomical spectrum shown in the image and then identify all visible emission lines present in it."
+            intro = "Briefly analyze and describe the given spectrum shown in the image and then identify all visible emission lines present in it."
         elif spectrum_text is not None:
-            intro = "Briefly analyze and describe the following astronomical spectrum data and then identify all visible emission lines present in it."
+            intro = "Briefly analyze and describe the following spectrum data and then identify all visible emission lines present in it."
         else:
             intro = "Briefly analyze and describe the given spectrum and then identify all visible emission lines present in it."
 

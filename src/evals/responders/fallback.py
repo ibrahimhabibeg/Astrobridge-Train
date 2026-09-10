@@ -7,8 +7,6 @@ re-prompt with the task's fallback_tag appended -> merge results back.
 
 from __future__ import annotations
 
-from typing import List
-
 from . import ModelResponse
 
 
@@ -16,10 +14,10 @@ def identify_failed_indices(
     responses: list[ModelResponse],
     task_name: str = "",
 ) -> list[int]:
-    """Return indices where parsing failed (parsed is None or 'UNKNOWN')."""
+    """Return indices where parsing failed (parsed is None)."""
     failed = []
     for i, r in enumerate(responses):
-        if r.parsed is None or r.parsed == "UNKNOWN":
+        if r.parsed is None:
             failed.append(i)
     return failed
 
@@ -40,14 +38,9 @@ def merge_fallback_responses(
         fallback_tag: The tag that was appended between original and fallback text.
         task: The task object (for default_parse and name).
     """
-    task_name = getattr(task, "name", "")
-
     for idx, fb_text in zip(failed_indices, fallback_raw_texts):
         combined = original_responses[idx].raw_text + fallback_tag + " " + fb_text
         parsed = task.default_parse(combined)
-
-        if parsed is None or parsed == "UNKNOWN":
-            parsed = [] if task_name == "emission_lines" else "UNKNOWN"
 
         original_responses[idx] = ModelResponse(
             parsed=parsed,

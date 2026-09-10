@@ -121,7 +121,7 @@ def _compute_emission_line_metrics(results_dir: str, task: Any):
     df["tp_set"] = [g & p for g, p in zip(df["gt_set"], df["pred_set"])]
 
     # Format errors
-    has_raw = df.get("raw_response", pd.Series([""]*len(df))).fillna("")
+    has_raw = df.get("full_response", pd.Series([""]*len(df))).fillna("")
     is_none = has_raw.str.upper().str.contains("NONE")
     format_errors = int(((df["pred_set"].apply(len) == 0) & ~is_none & (has_raw != "")).sum())
 
