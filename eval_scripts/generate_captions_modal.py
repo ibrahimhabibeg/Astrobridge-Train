@@ -45,21 +45,25 @@ def download_models():
     print(f"Downloading Base LLM: {base_llm_id}")
     snapshot_download(base_llm_id)
 
-    print("Downloading evaluation datasets...")
+    DATASET_CACHE_VERSION = "2026-09-11-v2-400samples"
+    print(f"Downloading evaluation datasets (version {DATASET_CACHE_VERSION})...")
     hf_hub_download(
         repo_id="UniverseTBD/AstroBridge-Data",
         filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
         repo_type="dataset",
+        force_download=True,
     )
     hf_hub_download(
         repo_id="UniverseTBD/AstroBridge-Data",
         filename="observations/spectra/extracted_emission_lines.csv",
         repo_type="dataset",
+        force_download=True,
     )
     hf_hub_download(
         repo_id="UniverseTBD/AstroBridge-Data",
         filename="observations/spectra/extracted_types.csv",
         repo_type="dataset",
+        force_download=True,
     )
 
 
@@ -120,6 +124,9 @@ def generate_captions_remote(
         print(f"[Modal Remote] Limiting to first {limit} samples.")
         df_test = df_test.head(limit)
 
+    total_expected = len(df_test)
+    print(f"[Modal Remote] Starting caption generation for {total_expected} spectra (dataset_filter='{dataset_filter}')...")
+
     out_dir = os.path.join("/outputs", timestamp_dir)
     os.makedirs(out_dir, exist_ok=True)
     captions_file = os.path.join(out_dir, "captions.jsonl")
@@ -169,7 +176,10 @@ def generate_captions_remote(
 
             volume.commit()
 
-    print(f"[Modal Remote] Done. Generated {total} captions in {captions_file}")
+    if total != total_expected:
+        print(f"[Modal Remote] WARNING: Generated {total} captions but expected {total_expected}!")
+    else:
+        print(f"[Modal Remote] Done. Successfully generated all {total}/{total_expected} captions in {captions_file}")
     return timestamp_dir
 
 

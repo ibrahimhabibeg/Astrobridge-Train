@@ -15,8 +15,12 @@ from ..metrics.classification import (
 )
 from ..metrics.multilabel import (
     sample_precision_recall_f1,
+    micro_precision_recall_f1,
     snr_weighted_metrics,
+    micro_snr_weighted_metrics,
     per_label_report,
+    macro_label_f1,
+    exact_match_rate,
 )
 
 
@@ -86,19 +90,47 @@ def compute_caption_metrics(results_dir: str, task: Any) -> Dict[str, Any]:
             pred_sets.append(set(p_val) if isinstance(p_val, (list, set)) else set())
 
         prf = sample_precision_recall_f1(gt_sets, pred_sets)
+        micro_prf = micro_precision_recall_f1(gt_sets, pred_sets)
         snr_m = snr_weighted_metrics(gt_dicts, pred_sets)
+        micro_snr = micro_snr_weighted_metrics(gt_dicts, pred_sets)
+        exact = exact_match_rate(gt_sets, pred_sets)
+
         canonical_lines = getattr(task, "canonical_lines", [])
         if not canonical_lines:
             all_found = set().union(*gt_sets, *pred_sets)
             canonical_lines = sorted(list(all_found)) if all_found else []
         line_m = per_label_report(gt_sets, pred_sets, labels=canonical_lines, gt_dicts=gt_dicts)
+        macro_f1_val = macro_label_f1(gt_sets, pred_sets, labels=canonical_lines)
 
         task_metrics = {
+            # Sample-level metrics (mean across samples)
             "sample_precision": prf.get("mean_precision", 0.0),
             "sample_recall": prf.get("mean_recall", 0.0),
             "sample_f1": prf.get("mean_f1", 0.0),
             "snr_weighted_recall": snr_m.get("mean_snr_weighted_recall", 0.0),
             "snr_weighted_f1": snr_m.get("mean_snr_weighted_f1", 0.0),
+            # Dataset-level (micro / pooled across dataset)
+            "dataset_precision": micro_prf.get("micro_precision", 0.0),
+            "dataset_recall": micro_prf.get("micro_recall", 0.0),
+            "dataset_f1": micro_prf.get("micro_f1", 0.0),
+            "dataset_micro_snr_weighted_recall": micro_snr.get("micro_snr_weighted_recall", 0.0),
+            "dataset_micro_snr_weighted_f1": micro_snr.get("micro_snr_weighted_f1", 0.0),
+            # Macro-line and exact match
+            "dataset_macro_f1": macro_f1_val,
+            "exact_match_rate": exact,
+            # Structured groupings matching classic eval suite
+            "sample_level": {
+                **prf,
+                "mean_snr_weighted_recall": snr_m.get("mean_snr_weighted_recall", 0.0),
+                "mean_snr_weighted_f1": snr_m.get("mean_snr_weighted_f1", 0.0),
+            },
+            "dataset_micro_level": {
+                **micro_prf,
+                **micro_snr,
+            },
+            "dataset_macro_level": {
+                "mean_line_f1": macro_f1_val,
+            },
             "per_line": line_m,
         }
     else:
@@ -180,8 +212,14 @@ def _generate_markdown_report(
             f"| **Sample-Mean Precision** | {tm.get('sample_precision', 0):.4f} |",
             f"| **Sample-Mean Recall** | {tm.get('sample_recall', 0):.4f} |",
             f"| **Sample-Mean F1** | {tm.get('sample_f1', 0):.4f} |",
-            f"| **SNR-Weighted Recall** | {tm.get('snr_weighted_recall', 0):.4f} |",
-            f"| **SNR-Weighted F1** | {tm.get('snr_weighted_f1', 0):.4f} |",
+            f"| **Dataset-Level (Micro) Precision** | {tm.get('dataset_precision', 0):.4f} |",
+            f"| **Dataset-Level (Micro) Recall** | {tm.get('dataset_recall', 0):.4f} |",
+            f"| **Dataset-Level (Micro) F1** | {tm.get('dataset_f1', 0):.4f} |",
+            f"| **Dataset-Level Macro F1** | {tm.get('dataset_macro_f1', 0):.4f} |",
+            f"| **Exact Match Rate** | {tm.get('exact_match_rate', 0) * 100:.2f}% |",
+            f"| **SNR-Weighted Recall (Sample)** | {tm.get('snr_weighted_recall', 0):.4f} |",
+            f"| **SNR-Weighted F1 (Sample)** | {tm.get('snr_weighted_f1', 0):.4f} |",
+            f"| **SNR-Weighted F1 (Dataset Micro)** | {tm.get('dataset_micro_snr_weighted_f1', 0):.4f} |",
         ])
     else:
         lines.extend([

@@ -9,6 +9,7 @@ from evals.caption_responders import (
     CaptionSample,
     get_caption_responder,
 )
+from evals.caption_responders.hf_vision import clean_and_extract_caption
 from evals.caption_tasks import (
     get_caption_task,
     CaptionDistanceTask,
@@ -57,6 +58,23 @@ class TestCaptionEval(unittest.TestCase):
         ]
         captions = responder.generate_captions(samples, prompt_override="Overridden prompt")
         self.assertEqual(captions[0].caption_prompt, "Overridden prompt")
+
+    def test_clean_and_extract_caption(self):
+        # 1. Plain caption without tags
+        raw1 = "This optical spectrum exhibits a flat continuum with strong H-alpha emission."
+        self.assertEqual(clean_and_extract_caption(raw1), raw1)
+
+        # 2. Caption with CAPTION: prefix
+        raw2 = "<think>Analyzing plot...</think>\nCAPTION: Galaxy spectrum with narrow [O III] lines."
+        self.assertEqual(clean_and_extract_caption(raw2), "Galaxy spectrum with narrow [O III] lines.")
+
+        # 3. Caption with Draft and Final polish note
+        raw3 = "**Draft:** CAPTION: Quasar spectrum showing broad Balmer lines.\n\nNote: Red line is continuum."
+        self.assertEqual(clean_and_extract_caption(raw3), "Quasar spectrum showing broad Balmer lines.")
+
+        # 4. Caption with reasoning preamble and final answer
+        raw4 = "The user wants a caption.\n\n1. Analyze image: x-axis 4000 to 9000.\n\nCAPTION: Low continuum spectrum with prominent emission lines."
+        self.assertEqual(clean_and_extract_caption(raw4), "Low continuum spectrum with prominent emission lines.")
 
     def test_frontier_model_mock(self):
         config = {"frontier_type": "mock", "mock_answer": "C"}
@@ -223,6 +241,12 @@ class TestCaptionEval(unittest.TestCase):
             self.assertIn("sample_precision", metrics["task_metrics"])
             self.assertIn("sample_recall", metrics["task_metrics"])
             self.assertIn("sample_f1", metrics["task_metrics"])
+            self.assertIn("dataset_precision", metrics["task_metrics"])
+            self.assertIn("dataset_recall", metrics["task_metrics"])
+            self.assertIn("dataset_f1", metrics["task_metrics"])
+            self.assertIn("dataset_micro_level", metrics["task_metrics"])
+            self.assertIn("dataset_macro_f1", metrics["task_metrics"])
+            self.assertIn("exact_match_rate", metrics["task_metrics"])
             self.assertIn("snr_weighted_f1", metrics["task_metrics"])
             self.assertIn("per_line", metrics["task_metrics"])
 
@@ -231,6 +255,7 @@ class TestCaptionEval(unittest.TestCase):
             with open(report_path, "r") as rf:
                 content = rf.read()
                 self.assertIn("# Evaluation Report: caption_emission_lines", content)
+                self.assertIn("Dataset-Level (Micro) Precision", content)
                 self.assertIn("Per-Line Detection Statistics", content)
 
     def test_run_caption_evaluation_pipeline(self):
