@@ -22,7 +22,7 @@ from captioner.data.dataset import CaptionerDataset
 from captioner.model.captioner import Captioner, FusionStack
 from captioner.train.checkpoint import assert_quantization_matches
 from captioner.train.loop import run_training
-from captioner.train.stage1 import _cosine_with_warmup, build_llm, get_llm_hidden_size
+from captioner.train.stage1 import _cosine_with_warmup, build_llm_staggered, get_llm_hidden_size
 from captioner.utils.logging import get_logger
 from captioner.utils.seeding import seed_everything
 
@@ -42,7 +42,7 @@ def run_stage2(cfg: DictConfig) -> None:
     captions = pd.read_parquet(cfg.captions.parquet)
     tier_histogram = json.loads(Path(cfg.manifest.stats).read_text())["tier_histogram"]
 
-    llm, tokenizer = build_llm(cfg)
+    llm, tokenizer = build_llm_staggered(cfg, accelerator)
     d_llm = get_llm_hidden_size(llm)
 
     lora_config = LoraConfig(
@@ -87,8 +87,8 @@ def run_stage2(cfg: DictConfig) -> None:
     model = Captioner(fusion_stack, llm, n_queries=int(cfg.qformer.n_queries))
 
     cache_root = Path(cfg.get("cache", {}).get("out_dir", "outputs/cache"))
-    train_ds = CaptionerDataset(manifest, captions, cfg, cache_root, "train", tokenizer, cfg.prompt.template)
-    val_ds = CaptionerDataset(manifest, captions, cfg, cache_root, "val", tokenizer, cfg.prompt.template)
+    train_ds = CaptionerDataset(manifest, captions, cfg, cache_root, "train", tokenizer, cfg.prompt)
+    val_ds = CaptionerDataset(manifest, captions, cfg, cache_root, "val", tokenizer, cfg.prompt)
     logger.info(f"Stage 2 datasets ready: train={len(train_ds)} val={len(val_ds)}")
 
     collate_fn = make_collate_fn(train_ds.modality_names, out_dims, max_tokens, tokenizer.pad_token_id)
