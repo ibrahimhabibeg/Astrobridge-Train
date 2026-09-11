@@ -10,8 +10,7 @@ from captioner.utils.config import load_config
 from captioner.encoders.registry import build_encoder
 from captioner.model.captioner import Captioner, FusionStack
 from captioner.train.stage1 import build_llm, get_llm_hidden_size
-from captioner.utils.prompt import human_readable_subset
-
+from captioner.utils.prompt import build_wrapper_text
 
 class AstroBridgeResponder:
     def __init__(self, config: dict, device: str):
@@ -86,7 +85,7 @@ class AstroBridgeResponder:
 
         responses = [
             ModelResponse(
-                parsed=task.default_parse(a) if task.default_parse(a) is not None else [],
+                parsed=task.default_parse(a),
                 raw_text=a,
                 forced_fallback=False,
             )
@@ -134,32 +133,62 @@ class AstroBridgeResponder:
                         mask[i, :n] = False
                 modality_batch[name] = {"tokens": tokens, "mask": mask}
 
-            if questions is not None:
-                prompt_texts = [questions] * B if isinstance(questions, str) else questions
-            else:
-                prompt_texts = [
-                    self.cfg.prompt.template.format(modalities=human_readable_subset(shown))
-                ] * B
-
-            self.tokenizer.padding_side = "left"
-            prompt_ids = self.tokenizer(
-                prompt_texts, add_special_tokens=False, return_tensors="pt", padding=True
-            )["input_ids"].to(self.device)
-
             device_type = "cuda" if str(self.device).startswith("cuda") else "cpu"
             with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                prefix = self.model.fusion_stack(modality_batch)
-                prompt_embeds = self.model.llm.get_input_embeddings()(prompt_ids)
-                inputs_embeds = torch.cat([prefix, prompt_embeds], dim=1)
-                attention_mask = torch.ones(
-                    inputs_embeds.shape[:2], dtype=torch.long, device=self.device
-                )
+                prefix = self.model.fusion_stack(modality_batch)  # (B, n_queries, d_llm)                
+                
+                system = self.cfg.prompt.system_variants[0]
+                
+                if isinstance(questions, str):
+                    questions = [questions] * B
+                elif questions is None:
+                    questions = [self.cfg.prompt.instruction_variants[0]] * B
+
+                embed_fn = self.model.llm.get_input_embeddings()
+                embeds_list = []
+
+                for i in range(B):
+                    pre_text, post_text = build_wrapper_text(self.cfg.prompt, system, questions[i])
+                    
+                    pre_ids = self.tokenizer(
+                        pre_text, add_special_tokens=False, return_tensors="pt"
+                    )["input_ids"].to(self.device)
+                    post_ids = self.tokenizer(
+                        post_text, add_special_tokens=False, return_tensors="pt"
+                    )["input_ids"].to(self.device)
+                    
+                    pre_embeds = embed_fn(pre_ids)  # (1, L_pre, d_llm)
+                    post_embeds = embed_fn(post_ids)  # (1, L_post, d_llm)
+                    
+                    pref = prefix[i:i+1]  # (1, n_queries, d_llm)
+                    
+                    seq_embeds = torch.cat([pre_embeds, pref, post_embeds], dim=1)  # (1, total_L, d_llm)
+                    embeds_list.append(seq_embeds.squeeze(0))
+
+                # Left-pad the assembled sequences for generation
+                max_len = max(emb.shape[0] for emb in embeds_list)
+                d_llm = embeds_list[0].shape[-1]
+                
+                inputs_embeds = torch.zeros((B, max_len, d_llm), dtype=embeds_list[0].dtype, device=self.device)
+                attention_mask = torch.zeros((B, max_len), dtype=torch.long, device=self.device)
+                
+                for i, emb in enumerate(embeds_list):
+                    seq_len = emb.shape[0]
+                    inputs_embeds[i, -seq_len:] = emb
+                    attention_mask[i, -seq_len:] = 1
 
                 pad_token_id = (
                     self.tokenizer.pad_token_id
                     if self.tokenizer.pad_token_id is not None
                     else self.tokenizer.eos_token_id
                 )
+                
+                # Make sure we stop on both <|im_end|> and <|endoftext|>
+                eos_ids = [self.tokenizer.eos_token_id]
+                if self.tokenizer.convert_tokens_to_ids("<|im_end|>") not in eos_ids:
+                    eos_ids.append(self.tokenizer.convert_tokens_to_ids("<|im_end|>"))
+                if self.tokenizer.convert_tokens_to_ids("<|endoftext|>") not in eos_ids:
+                    eos_ids.append(self.tokenizer.convert_tokens_to_ids("<|endoftext|>"))
 
                 gen = self.model.llm.generate(
                     inputs_embeds=inputs_embeds,
@@ -167,5 +196,6 @@ class AstroBridgeResponder:
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
                     pad_token_id=pad_token_id,
+                    eos_token_id=eos_ids,
                 )
             return self.tokenizer.batch_decode(gen, skip_special_tokens=True)

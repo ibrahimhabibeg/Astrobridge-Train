@@ -7,14 +7,14 @@ from ..data import load_emission_line_ground_truth
 CANONICAL_LINES: List[str] = [
     # "Lyα",
     # "O I 1304",
-    "[O II] 3727",
+    # "[O II] 3727",
     "Hγ",
     # "[O III] 4363",
     "Hβ",
-    "[O III] 5007",
-    "[N II] 6583",
+    # "[O III] 5007",
+    # "[N II] 6583",
     "Hα",
-    "[S II] 6720",
+    # "[S II] 6720",
     # "[O II] 7325",
 ]
 
@@ -69,12 +69,14 @@ def clean_key(s: str) -> str:
 
 def _build_alias_map() -> Dict[str, str]:
     alias_map: Dict[str, str] = {}
+    active_lines = set(CANONICAL_LINES)
 
-    for line in CANONICAL_LINES:
+    for line in active_lines:
         alias_map[clean_key(line)] = line
 
     for csv_name, canonical in CSV_TO_CANONICAL.items():
-        alias_map[clean_key(csv_name)] = canonical
+        if canonical in active_lines:
+            alias_map[clean_key(csv_name)] = canonical
 
     manual_aliases: Dict[str, str] = {
         # Hα
@@ -149,6 +151,11 @@ class EmissionLineTask:
 
             if raw_line in CSV_TO_CANONICAL:
                 canonical = CSV_TO_CANONICAL[raw_line]
+                
+                # Only include this line if it's currently active
+                if canonical not in self.canonical_lines:
+                    continue
+                    
                 if eid not in self.ground_truth_by_id:
                     self.ground_truth_by_id[eid] = {}
                 # If multiple lines map to same canonical (e.g. doublets/broad), take max SNR
