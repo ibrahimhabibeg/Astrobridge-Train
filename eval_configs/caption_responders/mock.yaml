@@ -1,0 +1,4 @@
+responder_type: mock
+model_id: mock-astronomy-captioner
+caption_prompt: "Describe the given spectrum in detail, noting its continuum shape, prominent emission or absorption features, and spectral characteristics."
+

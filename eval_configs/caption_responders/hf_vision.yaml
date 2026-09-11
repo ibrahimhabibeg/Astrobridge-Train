@@ -1,0 +1,6 @@
+responder_type: hf_vision
+hf_model_id: Qwen/Qwen3.5-9B
+caption_prompt: "Describe the astronomical spectrum shown in the image in detail, noting its continuum shape, prominent emission or absorption features, and spectral characteristics."
+max_tokens: 512
+gpu: A10G
+

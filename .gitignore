@@ -7,7 +7,8 @@ outputs/
 .venv/
 venv/
 eval_results/
-.env.ipynb_checkpoints/
+.env
+.ipynb_checkpoints/
 */.ipynb_checkpoints/
 logs/*
 !logs/.gitkeep

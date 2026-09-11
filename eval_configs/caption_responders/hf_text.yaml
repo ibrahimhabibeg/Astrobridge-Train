@@ -1,0 +1,7 @@
+responder_type: hf_text
+hf_model_id: Qwen/Qwen3.5-9B
+caption_prompt: "Describe the following spectrum data in detail, noting its continuum shape, prominent emission or absorption features, and spectral characteristics."
+num_points: 100
+max_tokens: 512
+gpu: A10G
+
