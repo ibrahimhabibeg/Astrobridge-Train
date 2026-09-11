@@ -1,7 +1,7 @@
 responder_type: hf_text
 hf_model_id: Qwen/Qwen3.5-9B
-caption_prompt: "Describe the following spectrum data in detail, noting its continuum shape, prominent emission or absorption features, and spectral characteristics."
+caption_prompt: "Provide a concise astronomical caption (2-4 sentences) characterizing this spectrum observation. Summarize the continuum shape, prominent emission or absorption lines (e.g. Balmer lines, [O III]), and the physical nature of the object. Do not include step-by-step reasoning."
 num_points: 100
-max_tokens: 512
-gpu: A10G
-
+max_tokens: 256
+gpu: A100-80GB
+batch_size: 64
