@@ -46,10 +46,17 @@ def download_models():
     snapshot_download(base_llm_id)
 
     DATASET_CACHE_VERSION = "2026-09-11-v2-400samples"
+    DATASET_CACHE_VERSION = "2026-09-12-v3-dual-splits"
     print(f"Downloading evaluation datasets (version {DATASET_CACHE_VERSION})...")
     hf_hub_download(
         repo_id="UniverseTBD/AstroBridge-Data",
         filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
+        repo_type="dataset",
+        force_download=True,
+    )
+    hf_hub_download(
+        repo_id="UniverseTBD/AstroBridge-Data",
+        filename="observations/spectra/desi_sdss_subset_crossmatch_nolan_1.0arcsec.parquet",
         repo_type="dataset",
         force_download=True,
     )
@@ -86,6 +93,7 @@ def generate_captions_remote(
     responder_config: dict,
     timestamp_dir: str,
     dataset_filter: str = "all",
+    split: str = "legacy",
     limit: int = None,
     batch_size: int = 32,
     caption_prompt: str = None,
@@ -111,14 +119,19 @@ def generate_captions_remote(
     responder = get_caption_responder(responder_config, device)
 
     print(f"[Modal Remote] Loading dataset filter '{dataset_filter}'...")
+    print(f"[Modal Remote] Loading dataset filter '{dataset_filter}' (split='{split}')...")
     if dataset_filter == "emission_lines":
         df_test = load_test_spectra_emission_lines()
+        df_test = load_test_spectra_emission_lines(split_version=split)
     elif dataset_filter == "source":
         df_test = load_test_spectra_by_category("class", ["GALAXY", "QSO"])
+        df_test = load_test_spectra_by_category("class", ["GALAXY", "QSO"], split_version=split)
     elif dataset_filter == "subclass":
         df_test = load_test_spectra_by_category("subclass", ["AGN", "STARBURST", "STARFORMING", "BROADLINE"])
+        df_test = load_test_spectra_by_category("subclass", ["AGN", "STARBURST", "STARFORMING", "BROADLINE"], split_version=split)
     else:
         df_test = load_test_spectra()
+        df_test = load_test_spectra(split_version=split)
 
     if limit is not None:
         print(f"[Modal Remote] Limiting to first {limit} samples.")
@@ -126,6 +139,7 @@ def generate_captions_remote(
 
     total_expected = len(df_test)
     print(f"[Modal Remote] Starting caption generation for {total_expected} spectra (dataset_filter='{dataset_filter}')...")
+    print(f"[Modal Remote] Starting caption generation for {total_expected} spectra (dataset_filter='{dataset_filter}', split='{split}')...")
 
     out_dir = os.path.join("/outputs", timestamp_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -188,6 +202,7 @@ def main(
     responder: str,
     output: str = None,
     dataset_filter: str = "all",
+    split: str = "legacy",
     limit: int = None,
     batch_size: int = None,
     caption_prompt: str = None,
@@ -207,14 +222,17 @@ def main(
 
     resp_tag = responder_config.get("responder_type", "model")
     timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_captions")
+    timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{split}_captions")
 
     gpu_type = gpu or responder_config.get("gpu", "A100-80GB")
     print(f"Launching remote caption generation on Modal GPU ({gpu_type}) with batch size {effective_batch_size}...")
+    print(f"Launching remote caption generation on Modal GPU ({gpu_type}) with batch size {effective_batch_size} (split={split})...")
 
     generate_captions_remote.with_options(gpu=gpu_type).remote(
         responder_config=responder_config,
         timestamp_dir=timestamp_dir,
         dataset_filter=dataset_filter,
+        split=split,
         limit=limit,
         batch_size=effective_batch_size,
         caption_prompt=caption_prompt,
@@ -253,6 +271,7 @@ def main(
     print(f"  uv run eval_scripts/run_caption_eval_local.py \\")
     print(f"      --task eval_configs/caption_tasks/distance.yaml \\")
     print(f"      --captions {final_output_path} \\")
+    print(f"      --split {split} \\")
     print(f"      --frontier eval_configs/frontier/gemini.yaml")
 
 
@@ -261,6 +280,7 @@ if __name__ == "__main__":
     parser.add_argument("--responder", type=str, required=True, help="Path to responder config.")
     parser.add_argument("--output", type=str, default=None, help="Local output path.")
     parser.add_argument("--dataset-filter", type=str, default="all", help="Dataset filter.")
+    parser.add_argument("--split", type=str, default="legacy", choices=["legacy", "v7"], help="Dataset split: 'legacy' (default, 400 test) or 'v7' (641 val+test).")
     parser.add_argument("--limit", type=int, default=None, help="Sample limit.")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size.")
     parser.add_argument("--caption-prompt", type=str, default=None, help="Prompt override.")
@@ -271,6 +291,7 @@ if __name__ == "__main__":
         f"Please run with Modal CLI:\n"
         f"  modal run eval_scripts/generate_captions_modal.py "
         f"--responder {args.responder} "
+        f"--split {args.split} "
         + (f"--output {args.output} " if args.output else "")
         + (f"--limit {args.limit} " if args.limit else "")
     )

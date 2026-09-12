@@ -48,6 +48,7 @@ def run_caption_evaluation(
     responder_config: Optional[dict],
     captions_file: Optional[str],
     output_dir: str,
+    split: str = "legacy",
     limit: Optional[int] = None,
     caption_prompt_override: Optional[str] = None,
     batch_size: int = 32,
@@ -64,16 +65,21 @@ def run_caption_evaluation(
 
     # Load appropriate dataset for ground truth mapping
     print(f"Loading ground truth dataset for {task_name}...")
+    print(f"Loading ground truth dataset for {task_name} (split='{split}')...")
     if "emission_lines" in task_name:
         df_test = load_test_spectra_emission_lines()
+        df_test = load_test_spectra_emission_lines(split_version=split)
     elif "source" in task_name:
         active_keys = list(task_kwargs.get("active_classes", {"GALAXY": "Galaxy", "QSO": "Quasar"}).keys())
         df_test = load_test_spectra_by_category("class", active_keys)
+        df_test = load_test_spectra_by_category("class", active_keys, split_version=split)
     elif "subclass" in task_name:
         active_keys = list(task_kwargs.get("active_classes", {}).keys())
         df_test = load_test_spectra_by_category("subclass", active_keys)
+        df_test = load_test_spectra_by_category("subclass", active_keys, split_version=split)
     else:
         df_test = load_test_spectra()
+        df_test = load_test_spectra(split_version=split)
 
     if limit is not None:
         df_test = df_test.head(limit)
@@ -90,13 +96,23 @@ def run_caption_evaluation(
 
     if captions_file and os.path.exists(captions_file):
         print(f"Loading pre-generated captions from {captions_file}...")
+        total_in_file = 0
         with open(captions_file, "r") as f:
             for line in f:
                 if line.strip():
+                    total_in_file += 1
                     item = json.loads(line)
                     eid = str(item["wiki_entity_id"])
                     if eid in gt_by_id:
                         captions_by_id[eid] = item
+
+        matched_count = len(captions_by_id)
+        print(f"Matched {matched_count}/{total_in_file} captions against ground truth (split='{split}').")
+        if total_in_file > 0 and matched_count < 0.5 * total_in_file and split == "legacy":
+            print(
+                f"[Notice] Low match rate ({matched_count}/{total_in_file}). If these captions were "
+                f"generated on the v7 split, please pass '--split v7'."
+            )
     elif responder_config:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Initializing caption responder '{responder_config.get('responder_type')}' on {device}...")
@@ -209,6 +225,7 @@ def run_caption_evaluation(
                 "task": task.get_config(),
                 "frontier": frontier.get_config(),
                 "responder": responder_config if responder_config else {"source": captions_file},
+                "split": split,
                 "total_samples": len(eval_ids),
                 "timestamp": datetime.now().isoformat(),
             },
@@ -229,6 +246,7 @@ def main():
     parser.add_argument("--frontier", type=str, required=True, help="Path to frontier model YAML config.")
     parser.add_argument("--responder", type=str, default=None, help="Path to caption responder YAML config.")
     parser.add_argument("--captions", type=str, default=None, help="Path to pre-generated captions.jsonl.")
+    parser.add_argument("--split", type=str, default="legacy", choices=["legacy", "v7"], help="Dataset split: 'legacy' (default, 400 test) or 'v7' (641 val+test).")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of samples.")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for captioning.")
     parser.add_argument("--caption-prompt", type=str, default=None, help="Override caption prompt.")
@@ -253,6 +271,7 @@ def main():
     resp_tag = responder_config.get("responder_type") if responder_config else "cached_captions"
     task_name = task_config.get("name", "task")
     timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{task_name}")
+    timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{args.split}_{task_name}")
 
     output_dir = os.path.join(os.getcwd(), "eval_results", "caption_eval", timestamp_dir)
     print(f"Starting caption evaluation -> Output dir: {output_dir}")
@@ -263,6 +282,7 @@ def main():
         responder_config=responder_config,
         captions_file=args.captions,
         output_dir=output_dir,
+        split=args.split,
         limit=args.limit,
         caption_prompt_override=args.caption_prompt,
         batch_size=args.batch_size,

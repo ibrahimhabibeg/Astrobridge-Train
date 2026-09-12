@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--responder", type=str, required=True, help="Path to caption responder YAML config.")
     parser.add_argument("--output", type=str, required=True, help="Output path for captions.jsonl.")
     parser.add_argument("--dataset-filter", type=str, choices=["all", "emission_lines", "source", "subclass"], default="all", help="Dataset filter.")
+    parser.add_argument("--split", type=str, choices=["legacy", "v7"], default="legacy", help="Dataset split: 'legacy' (default, 400 test) or 'v7' (641 val+test).")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of spectra.")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for caption generation.")
     parser.add_argument("--caption-prompt", type=str, default=None, help="Override captioning prompt.")
@@ -49,14 +50,19 @@ def main():
 
     # Load spectra
     print(f"Loading dataset with filter '{args.dataset_filter}'...")
+    print(f"Loading dataset with filter '{args.dataset_filter}' (split='{args.split}')...")
     if args.dataset_filter == "emission_lines":
         df_test = load_test_spectra_emission_lines()
+        df_test = load_test_spectra_emission_lines(split_version=args.split)
     elif args.dataset_filter == "source":
         df_test = load_test_spectra_by_category("class", ["GALAXY", "QSO"])
+        df_test = load_test_spectra_by_category("class", ["GALAXY", "QSO"], split_version=args.split)
     elif args.dataset_filter == "subclass":
         df_test = load_test_spectra_by_category("subclass", ["AGN", "STARBURST", "STARFORMING", "BROADLINE"])
+        df_test = load_test_spectra_by_category("subclass", ["AGN", "STARBURST", "STARFORMING", "BROADLINE"], split_version=args.split)
     else:
         df_test = load_test_spectra()
+        df_test = load_test_spectra(split_version=args.split)
 
     if args.limit is not None:
         print(f"Limiting to first {args.limit} samples.")

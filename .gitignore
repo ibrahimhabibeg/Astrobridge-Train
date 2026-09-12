@@ -16,3 +16,4 @@ logs/*
 
 RETRAIN_SKETCH.md
 training_example_template.txt
+src/evals/data/splits/v7_splits.parquet
