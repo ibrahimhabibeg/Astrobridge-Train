@@ -12,6 +12,7 @@ eval_results/
 */.ipynb_checkpoints/
 logs/*
 !logs/.gitkeep
+.env
 
 RETRAIN_SKETCH.md
 training_example_template.txt
