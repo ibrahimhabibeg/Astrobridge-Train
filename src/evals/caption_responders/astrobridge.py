@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
 from peft import PeftModel
@@ -13,7 +14,8 @@ from .base import (
 )
 from captioner.utils.config import load_config
 from captioner.encoders.registry import build_encoder
-from captioner.model.captioner import Captioner, FusionStack
+from captioner.model.captioner import Captioner, FusionStack, llm_embedding_norm
+from captioner.data.spectra_dataset import trimmed_spectrum_arrays
 from captioner.train.stage1 import build_llm, get_llm_hidden_size
 from captioner.utils.prompt import build_wrapper_text
 
@@ -43,10 +45,11 @@ class AstroBridgeCaptionResponder(BaseCaptionResponder):
             qformer_cfg=dict(self.cfg.qformer),
             projector_hidden_mult=int(self.cfg.projector.hidden_mult),
             projector_dropout=float(self.cfg.projector.dropout),
+            adapter_target_norm=llm_embedding_norm(llm),
         )
         print(f"Downloading middle.pt from {self.repo_id}...")
         middle_pt_path = hf_hub_download(repo_id=self.repo_id, filename="middle.pt")
-        fusion_stack.load_state_dict(torch.load(middle_pt_path, map_location="cpu", weights_only=True))
+        fusion_stack.load_state_dict(torch.load(middle_pt_path, map_location="cpu", weights_only=False))
 
         print("Initializing Captioner model and encoders...")
         self.model = Captioner(fusion_stack, llm, n_queries=int(self.cfg.qformer.n_queries))
@@ -76,22 +79,21 @@ class AstroBridgeCaptionResponder(BaseCaptionResponder):
 
         raw_inputs_list = []
         for sample in samples:
-            f_tensor = torch.tensor(sample.flux).float().unsqueeze(0)
-            wavelength = torch.tensor(sample.wavelength).float().unsqueeze(0)
+            # Clean wavelength grid: drop non-positive / non-finite sentinels (-1) and sort ascending
+            flux, wavelength, ivar, mask = trimmed_spectrum_arrays({
+                "flux": sample.flux,
+                "lambda": sample.wavelength,
+                "ivar": sample.ivar if sample.ivar is not None else np.ones_like(sample.flux),
+                "mask": sample.mask if sample.mask is not None else np.zeros_like(sample.flux, dtype=bool),
+            })
 
             spectrum_dict = {
-                "flux": f_tensor,
-                "wavelength": wavelength,
+                "flux": torch.tensor(flux).float().unsqueeze(0),
+                "wavelength": torch.tensor(wavelength).float().unsqueeze(0),
+                "ivar": torch.tensor(ivar).float().unsqueeze(0),
+                "mask": torch.tensor(mask).bool().unsqueeze(0),
                 "survey": [sample.survey],
             }
-
-            if sample.ivar is not None:
-                spectrum_dict["ivar"] = torch.tensor(sample.ivar).float().unsqueeze(0)
-
-            if sample.mask is not None:
-                spectrum_dict["mask"] = torch.tensor(sample.mask).bool().unsqueeze(0)
-            else:
-                spectrum_dict["mask"] = torch.zeros_like(f_tensor, dtype=torch.bool)
 
             raw_inputs_list.append({"spectra": spectrum_dict})
 

@@ -1,5 +1,5 @@
 responder_type: astrobridge
-astrobridge_id: UniverseTBD/astrobridge-model-v5
+astrobridge_id: UniverseTBD/astrobridge-model-v7
 caption_prompt: "Describe this observation, including relevant physical properties where they are supported."
 max_tokens: 512
 batch_size: 64
