@@ -7,6 +7,7 @@ from .base import (
     CaptionSample,
     GeneratedCaption,
     DEFAULT_SPECTRUM_CAPTION_PROMPT,
+    resolve_caption_prompt,
 )
 
 
@@ -15,7 +16,7 @@ class MockCaptionResponder(BaseCaptionResponder):
 
     def __init__(self, config: Optional[dict] = None, device: str = "cpu"):
         self.config = config or {}
-        self.caption_prompt = self.config.get("caption_prompt", DEFAULT_SPECTRUM_CAPTION_PROMPT)
+        self.caption_prompt = resolve_caption_prompt(self.config, "caption_generation/default.jinja2")
         self.model_id = self.config.get("model_id", "mock-caption-model")
 
     def get_config(self) -> Dict[str, Any]:

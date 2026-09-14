@@ -169,6 +169,52 @@ class TestPromptTemplates(unittest.TestCase):
         self.assertIn("shown in the image", em_task.build_prompt(image_mode=True))
         self.assertIn("spectrum data", em_task.build_prompt(image_mode=False, spectrum_text="data"))
 
+    def test_caption_generation_templates(self):
+        ab_prompt = render_prompt("caption_generation/astrobridge.jinja2")
+        self.assertIn("Describe this observation", ab_prompt)
+
+        vis_prompt = render_prompt("caption_generation/vision_baseline.jinja2")
+        self.assertIn("Provide a concise astronomical caption", vis_prompt)
+        self.assertIn("Do not describe the plot layout", vis_prompt)
+
+        txt_prompt = render_prompt("caption_generation/text_baseline.jinja2")
+        self.assertIn("Provide a concise astronomical caption", txt_prompt)
+
+        def_prompt = render_prompt("caption_generation/default.jinja2")
+        self.assertIn("Describe the given spectrum in detail", def_prompt)
+
+    def test_resolve_caption_prompt(self):
+        from src.evals.caption_responders import (
+            resolve_caption_prompt,
+            DEFAULT_SPECTRUM_CAPTION_PROMPT,
+            get_caption_responder,
+        )
+
+        # 1. Default fallback
+        p_def = resolve_caption_prompt({})
+        self.assertEqual(p_def, DEFAULT_SPECTRUM_CAPTION_PROMPT)
+
+        # 2. Explicit text override
+        p_custom = resolve_caption_prompt({"caption_prompt": "Custom user prompt."})
+        self.assertEqual(p_custom, "Custom user prompt.")
+
+        # 3. Via caption_prompt_template
+        p_tmpl = resolve_caption_prompt(
+            {"caption_prompt_template": "caption_generation/astrobridge.jinja2"}
+        )
+        self.assertIn("Describe this observation", p_tmpl)
+
+        # 4. Via caption_prompt ending in .jinja2
+        p_j2 = resolve_caption_prompt(
+            {"caption_prompt": "caption_generation/astrobridge.jinja2"}
+        )
+        self.assertIn("Describe this observation", p_j2)
+
+        # 5. Mock responder default initialization
+        mock_resp = get_caption_responder({"responder_type": "mock"}, "cpu")
+        self.assertEqual(mock_resp.caption_prompt, DEFAULT_SPECTRUM_CAPTION_PROMPT)
+
 
 if __name__ == "__main__":
     unittest.main()
+

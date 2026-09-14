@@ -3,10 +3,24 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
-DEFAULT_SPECTRUM_CAPTION_PROMPT = (
-    "Describe the given spectrum in detail, noting its continuum shape, "
-    "prominent emission or absorption features, and spectral characteristics."
-)
+from ..prompts import render_prompt
+
+DEFAULT_SPECTRUM_CAPTION_PROMPT = render_prompt("caption_generation/default.jinja2")
+
+
+def resolve_caption_prompt(
+    config: Dict[str, Any],
+    default_template: str = "caption_generation/default.jinja2",
+) -> str:
+    """Resolve caption prompt from config: supports explicit text, template name, or default template."""
+    if "caption_prompt" in config and config["caption_prompt"]:
+        prompt_val = str(config["caption_prompt"]).strip()
+        if prompt_val.endswith(".jinja2"):
+            return render_prompt(prompt_val)
+        return prompt_val
+    if "caption_prompt_template" in config and config["caption_prompt_template"]:
+        return render_prompt(str(config["caption_prompt_template"]).strip())
+    return render_prompt(default_template)
 
 
 @dataclass

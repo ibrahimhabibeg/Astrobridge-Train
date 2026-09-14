@@ -7,6 +7,7 @@ from .base import (
     CaptionSample,
     GeneratedCaption,
     DEFAULT_SPECTRUM_CAPTION_PROMPT,
+    resolve_caption_prompt,
 )
 
 
@@ -38,6 +39,7 @@ __all__ = [
     "CaptionSample",
     "GeneratedCaption",
     "DEFAULT_SPECTRUM_CAPTION_PROMPT",
+    "resolve_caption_prompt",
     "get_caption_responder",
 ]
 

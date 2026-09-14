@@ -11,6 +11,7 @@ from .base import (
     CaptionSample,
     GeneratedCaption,
     DEFAULT_SPECTRUM_CAPTION_PROMPT,
+    resolve_caption_prompt,
 )
 from ..responders.utils import subsample_spectrum, format_spectrum_text
 
@@ -70,7 +71,7 @@ class HFTextCaptionResponder(BaseCaptionResponder):
     def __init__(self, config: dict, device: str):
         assert "hf_model_id" in config and config["hf_model_id"], "Missing 'hf_model_id' in config"
         self._model_id = config["hf_model_id"]
-        self.caption_prompt = config.get("caption_prompt", DEFAULT_SPECTRUM_CAPTION_PROMPT)
+        self.caption_prompt = resolve_caption_prompt(config, "caption_generation/text_baseline.jinja2")
         self._num_points = config.get("num_points", 100)
         self._max_tokens = config.get("max_tokens", 256)
         self._device = device

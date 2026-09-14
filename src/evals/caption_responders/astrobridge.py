@@ -11,6 +11,7 @@ from .base import (
     CaptionSample,
     GeneratedCaption,
     DEFAULT_SPECTRUM_CAPTION_PROMPT,
+    resolve_caption_prompt,
 )
 from captioner.utils.config import load_config
 from captioner.encoders.registry import build_encoder
@@ -27,7 +28,7 @@ class AstroBridgeCaptionResponder(BaseCaptionResponder):
         assert "astrobridge_id" in config and config["astrobridge_id"], "Missing 'astrobridge_id' in config"
         self.device = device
         self.repo_id = config["astrobridge_id"]
-        self.caption_prompt = config.get("caption_prompt", DEFAULT_SPECTRUM_CAPTION_PROMPT)
+        self.caption_prompt = resolve_caption_prompt(config, "caption_generation/astrobridge.jinja2")
         self.cfg = load_config("base", "data", "modalities", "model", "stage2")
 
         print("Building base LLM...")
