@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Union
 import pandas as pd
 
 from ..buckets import BucketScheme, get_bucket_scheme
+from ..prompts import render_prompt
 from .base import CaptionEvalTask
 
 BIN_TO_LABEL = {
@@ -25,15 +26,10 @@ class CaptionDistanceTask(CaptionEvalTask):
             self.scheme = scheme
 
     def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
-        options = self.scheme.format_options()
-        return (
-            "You are an expert astrophysicist. You will be provided with a scientific description of an astronomical spectrum.\n"
-            "Based ONLY on the description of the spectrum, classify the distance of the observed astronomical object "
-            "into one of the following categories.\n\n"
-            f"Allowed categories:\n{options}\n\n"
-            f"Spectrum Description:\n\"\"\"\n{caption.strip()}\n\"\"\"\n\n"
-            "Think step-by-step, but you MUST conclude your response with the exact format:\n"
-            "FINAL ANSWER: [Letter]"
+        return render_prompt(
+            "caption_eval/distance.jinja2",
+            options=self.scheme.format_options(),
+            caption=caption.strip(),
         )
 
     def fallback_tag(self) -> str:

@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional
 import pandas as pd
 
 from ..data import load_emission_line_ground_truth
+from ..prompts import render_prompt
 
 CANONICAL_LINES: List[str] = [
     # "Lyα",
@@ -166,31 +167,24 @@ class EmissionLineTask:
                     self.ground_truth_by_id[eid][canonical] = snr
 
     def build_prompt(
-        self, *, image_mode: bool, spectrum_text: Optional[str] = None
+        self, *, image_mode: bool = False, spectrum_text: Optional[str] = None
     ) -> str:
         if image_mode:
-            intro = "Briefly analyze and describe the given spectrum shown in the image and then identify all visible emission lines present in it."
+            return render_prompt(
+                "direct_eval/emission_lines_image.jinja2",
+                candidate_lines=self._vocabulary_text,
+            )
         elif spectrum_text is not None:
-            intro = "Briefly analyze and describe the following spectrum data and then identify all visible emission lines present in it."
+            return render_prompt(
+                "direct_eval/emission_lines_text.jinja2",
+                candidate_lines=self._vocabulary_text,
+                spectrum_text=spectrum_text,
+            )
         else:
-            intro = "Briefly analyze and describe the given spectrum and then identify all visible emission lines present in it."
-
-        parts = [
-            intro,
-            f"\n\nAllowed candidate lines:\n{self._vocabulary_text}\n",
-        ]
-
-        if spectrum_text is not None:
-            parts.append(f"\n{spectrum_text}\n")
-
-        parts.append(
-            "\nYou MUST conclude your response with the exact format:\n"
-            "EMISSION LINES: line1, line2, ...\n"
-            "If no emission lines from the list are present, write:\n"
-            "EMISSION LINES: NONE"
-        )
-
-        return "".join(parts)
+            return render_prompt(
+                "direct_eval/emission_lines_default.jinja2",
+                candidate_lines=self._vocabulary_text,
+            )
 
     def fallback_tag(self) -> str:
         return "\n\nEMISSION LINES: "

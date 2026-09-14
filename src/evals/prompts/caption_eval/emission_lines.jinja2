@@ -1,0 +1,16 @@
+You are an expert astrophysicist. You will be provided with a scientific description of an astronomical spectrum.
+Based ONLY on the description of the spectrum, evaluate the following candidate checklist of emission lines and determine which ones are present, detected, or evidenced in the description.
+
+Allowed candidate lines:
+{{ candidate_lines }}
+
+Spectrum Description:
+"""
+{{ caption }}
+"""
+
+You MUST conclude your response with the exact format:
+EMISSION LINES: line1, line2, ...
+If none of the candidate emission lines are present or mentioned, write:
+EMISSION LINES: NONE
+

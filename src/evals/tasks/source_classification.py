@@ -2,6 +2,8 @@ import re
 from typing import Dict, Any, Optional
 import pandas as pd
 
+from ..prompts import render_prompt
+
 
 class CategoricalClassificationTask:
     """Unified task for categorical classification (source type, subclass, etc.)."""
@@ -20,23 +22,25 @@ class CategoricalClassificationTask:
         self._options_text = ", ".join(self.categories)
 
     def build_prompt(
-        self, *, image_mode: bool, spectrum_text: Optional[str] = None
+        self, *, image_mode: bool = False, spectrum_text: Optional[str] = None
     ) -> str:
-        parts = [
-            "Briefly analyze and describe the given spectrum and then classify "
-            "the astronomical source into one of the following categories.\n\n"
-            f"Allowed categories:\n{self._options_text}\n",
-        ]
-
+        is_subclass = self.target_column not in ("class", "source_class")
         if spectrum_text is not None:
-            parts.append(f"\n{spectrum_text}\n")
-
-        parts.append(
-            "\nYou MUST conclude your response with the exact format:\n"
-            "FINAL ANSWER: [Category]"
-        )
-
-        return "".join(parts)
+            template = (
+                "direct_eval/source_subclass_text.jinja2"
+                if is_subclass
+                else "direct_eval/source_class_text.jinja2"
+            )
+            return render_prompt(
+                template, options=self._options_text, spectrum_text=spectrum_text
+            )
+        else:
+            template = (
+                "direct_eval/source_subclass_image.jinja2"
+                if is_subclass
+                else "direct_eval/source_class_image.jinja2"
+            )
+            return render_prompt(template, options=self._options_text)
 
     def fallback_tag(self) -> str:
         return "\n\nFINAL ANSWER: "

@@ -3,6 +3,7 @@ from typing import Dict, Any, Union, Optional
 import pandas as pd
 
 from ..buckets import BucketScheme, get_bucket_scheme
+from ..prompts import render_prompt
 
 
 class DistanceClassificationTask:
@@ -18,33 +19,16 @@ class DistanceClassificationTask:
         self, *, image_mode: bool, spectrum_text: Optional[str] = None
     ) -> str:
         options = self.scheme.format_options()
-
         if image_mode:
-            intro = (
-                "Briefly analyze and describe the given spectrum and then classify "
-                "the distance of the observed astronomical object into one of the "
-                f"following categories:\n{options}.\n"
-            )
+            return render_prompt("direct_eval/distance_image.jinja2", options=options)
         elif spectrum_text is not None:
-            intro = (
-                "Briefly analyze and describe the given spectrum and then classify "
-                "the distance of the observed astronomical object into one of the "
-                f"following categories:\n{options}.\n\n"
-                f"{spectrum_text}\n\n"
+            return render_prompt(
+                "direct_eval/distance_text.jinja2",
+                options=options,
+                spectrum_text=spectrum_text,
             )
         else:
-            intro = (
-                "Based on the spectrum provided, classify the distance of the "
-                "observed astronomical object into one of the following categories: "
-                f"{options}. "
-                "Think step-by-step, but you MUST conclude with the exact phrase "
-            )
-            return intro + "'FINAL ANSWER: [Letter]'"
-
-        return (
-            intro
-            + "You MUST conclude your response with the exact format:\nFINAL ANSWER: [Letter]"
-        )
+            return render_prompt("direct_eval/distance_default.jinja2", options=options)
 
     def fallback_tag(self) -> str:
         return "\n\nFINAL ANSWER: "

@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, Optional
 import pandas as pd
 
+from ..prompts import render_prompt
 from .base import CaptionEvalTask
 
 
@@ -24,14 +25,15 @@ class CategoricalCaptionTask(CaptionEvalTask):
         self._options_text = ", ".join(self.categories)
 
     def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
-        target_desc = "source class" if self.target_column in ("class", "source_class") else "source subclass"
-        return (
-            "You are an expert astrophysicist. You will be provided with a scientific description of an astronomical spectrum.\n"
-            f"Based ONLY on the description of the spectrum, classify the astronomical {target_desc} into one of the following categories.\n\n"
-            f"Allowed categories:\n{self._options_text}\n\n"
-            f"Spectrum Description:\n\"\"\"\n{caption.strip()}\n\"\"\"\n\n"
-            "Think step-by-step, but you MUST conclude your response with the exact format:\n"
-            "FINAL ANSWER: [Category]"
+        template_name = (
+            "caption_eval/source_class.jinja2"
+            if self.target_column in ("class", "source_class")
+            else "caption_eval/subclass.jinja2"
+        )
+        return render_prompt(
+            template_name,
+            options=self._options_text,
+            caption=caption.strip(),
         )
 
     def fallback_tag(self) -> str:

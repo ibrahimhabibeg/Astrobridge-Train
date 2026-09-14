@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, List, Optional, Set
 import pandas as pd
 
+from ..prompts import render_prompt
 from .base import CaptionEvalTask
 
 # 14 standard diagnostic lines in the benchmark
@@ -199,16 +200,10 @@ class CaptionEmissionLineTask(CaptionEvalTask):
         items_text = "\n".join(
             f"- {self.line_display_names.get(k, k)} [{k}]" for k in candidate_keys
         )
-        return (
-            "You are an expert astrophysicist. You will be provided with a scientific description of an astronomical spectrum.\n"
-            "Based ONLY on the description of the spectrum, evaluate the following candidate checklist of emission lines "
-            "and determine which ones are present, detected, or evidenced in the description.\n\n"
-            f"Allowed candidate lines:\n{items_text}\n\n"
-            f"Spectrum Description:\n\"\"\"\n{caption.strip()}\n\"\"\"\n\n"
-            "You MUST conclude your response with the exact format:\n"
-            "EMISSION LINES: line1, line2, ...\n"
-            "If none of the candidate emission lines are present or mentioned, write:\n"
-            "EMISSION LINES: NONE"
+        return render_prompt(
+            "caption_eval/emission_lines.jinja2",
+            candidate_lines=items_text,
+            caption=caption.strip(),
         )
 
     def fallback_tag(self) -> str:
