@@ -12,10 +12,6 @@ _EMISSION_LINES_FILE = "observations/spectra/extracted_emission_lines.csv"
 _TYPES_FILE = "observations/spectra/extracted_types.csv"
 
 
-@functools.lru_cache(maxsize=1)
-def load_test_spectra() -> pd.DataFrame:
-    """Downloads the AstroBridge spectra parquet, filters to test split, deduplicates."""
-    print("Loading dataset...")
 def _load_legacy_test_spectra() -> pd.DataFrame:
     """Downloads the AstroBridge spectra parquet, filters to test split, deduplicates (400 samples)."""
     print("Loading legacy dataset (desi_sdss_crossmatch_nolan_1.0arcsec.parquet)...")
@@ -26,8 +22,6 @@ def _load_legacy_test_spectra() -> pd.DataFrame:
 
     print("Filtering and deduplicating data...")
     df_test = df[df["split"] == "test"]
-    df_test = df_test.drop_duplicates(subset=["wiki_entity_id"])
-    print(f"Found {len(df_test)} unique test samples.")
     df_test = df_test.drop_duplicates(subset=["wiki_entity_id"]).reset_index(drop=True)
     print(f"Found {len(df_test)} unique legacy test samples.")
     return df_test
@@ -107,14 +101,11 @@ def load_emission_line_ground_truth() -> pd.DataFrame:
     return pd.read_csv(csv_path)
 
 
-def load_test_spectra_emission_lines() -> pd.DataFrame:
 def load_test_spectra_emission_lines(split_version: Optional[str] = None) -> pd.DataFrame:
     """Test spectra filtered to those with emission line annotations."""
-    df_spectra = load_test_spectra()
     df_spectra = load_test_spectra(split_version=split_version)
     df_lines = load_emission_line_ground_truth()
     valid_ids = set(df_lines["wiki_entity_id"])
-    df_test_lines = df_spectra[df_spectra["wiki_entity_id"].isin(valid_ids)]
     df_test_lines = df_spectra[df_spectra["wiki_entity_id"].isin(valid_ids)].reset_index(drop=True)
     print(f"Found {len(df_test_lines)} test spectra matching emission line ground truth.")
     return df_test_lines
@@ -142,7 +133,6 @@ def load_test_spectra_by_category(
         active_keys: List of values in target_column to keep.
         split_version: 'legacy' (default) or 'v7'.
     """
-    df_spectra = load_test_spectra()
     df_spectra = load_test_spectra(split_version=split_version)
     df_types = _load_types_ground_truth()
 
@@ -152,7 +142,6 @@ def load_test_spectra_by_category(
         df_types[["wiki_entity_id", target_column]],
         on="wiki_entity_id",
         how="inner",
-    )
     ).reset_index(drop=True)
     print(f"Found {len(df_merged)} test spectra matching active {target_column} values.")
     return df_merged

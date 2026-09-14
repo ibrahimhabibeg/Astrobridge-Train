@@ -241,12 +241,15 @@ class TestCaptionEval(unittest.TestCase):
             self.assertIn("sample_precision", metrics["task_metrics"])
             self.assertIn("sample_recall", metrics["task_metrics"])
             self.assertIn("sample_f1", metrics["task_metrics"])
+            self.assertIn("sample_jaccard", metrics["task_metrics"])
             self.assertIn("dataset_precision", metrics["task_metrics"])
             self.assertIn("dataset_recall", metrics["task_metrics"])
             self.assertIn("dataset_f1", metrics["task_metrics"])
+            self.assertIn("dataset_jaccard", metrics["task_metrics"])
             self.assertIn("dataset_micro_level", metrics["task_metrics"])
             self.assertIn("dataset_macro_f1", metrics["task_metrics"])
             self.assertIn("exact_match_rate", metrics["task_metrics"])
+            self.assertIn("hamming_loss", metrics["task_metrics"])
             self.assertIn("snr_weighted_f1", metrics["task_metrics"])
             self.assertIn("per_line", metrics["task_metrics"])
 
@@ -255,6 +258,9 @@ class TestCaptionEval(unittest.TestCase):
             with open(report_path, "r") as rf:
                 content = rf.read()
                 self.assertIn("# Evaluation Report: caption_emission_lines", content)
+                self.assertIn("Sample-Mean Jaccard (IoU)", content)
+                self.assertIn("Dataset-Level (Micro) Jaccard", content)
+                self.assertIn("Hamming Loss", content)
                 self.assertIn("Dataset-Level (Micro) Precision", content)
                 self.assertIn("Per-Line Detection Statistics", content)
 

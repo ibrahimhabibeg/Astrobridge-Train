@@ -57,6 +57,7 @@ try:
         per_label_report,
         macro_label_f1,
         exact_match_rate,
+        multilabel_hamming_loss,
     )
 except ImportError:
     # Fallback implementations in case package isn't installed in editable mode
@@ -158,6 +159,56 @@ def extract_record_data(
         pred = r["response"].get("parsed", r["response"].get("prediction"))
 
     return gt, pred, gt_snr
+
+
+def extract_run_metadata(filepath: Path, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract captions file source, split, frontier model, etc. from run_config.json or records."""
+    meta: Dict[str, Any] = {}
+
+    # Try loading run_config.json from parent directory
+    config_file = filepath.parent / "run_config.json"
+    if config_file.exists():
+        try:
+            with open(config_file, "r") as cf:
+                rc = json.load(cf)
+            if "split" in rc:
+                meta["split"] = rc["split"]
+            if "timestamp" in rc:
+                meta["timestamp"] = rc["timestamp"]
+
+            resp = rc.get("responder", {})
+            if isinstance(resp, dict):
+                if "source" in resp:
+                    src_str = str(resp["source"])
+                    try:
+                        rel = Path(src_str).resolve().relative_to(ROOT_DIR)
+                        meta["captions_source"] = str(rel)
+                    except ValueError:
+                        meta["captions_source"] = src_str
+                elif "model_id" in resp:
+                    meta["captions_source"] = f"Model: {resp['model_id']}"
+                elif "responder_type" in resp:
+                    meta["captions_source"] = f"Responder: {resp['responder_type']}"
+
+            front = rc.get("frontier", {})
+            if isinstance(front, dict):
+                meta["frontier_model"] = front.get("model_name") or front.get("frontier_type")
+        except Exception:
+            pass
+
+    # Fallback to records if not found in run_config.json
+    if not meta.get("captions_source") and records:
+        first_r = records[0]
+        cap_info = first_r.get("caption", {})
+        if isinstance(cap_info, dict):
+            mid = cap_info.get("model_id")
+            rtype = cap_info.get("responder_type")
+            if mid and mid != "unknown":
+                meta["captions_source"] = f"Model: {mid}"
+            elif rtype and rtype != "unknown":
+                meta["captions_source"] = f"Responder: {rtype}"
+
+    return meta
 
 
 def infer_is_multilabel(records: List[Dict[str, Any]], user_task: Optional[str]) -> bool:
@@ -276,23 +327,27 @@ def compute_metrics_for_records(
 
         line_m = per_label_report(gt_sets, pred_sets, labels=canonical_lines, gt_dicts=gt_dicts)
         macro_f1_val = macro_label_f1(gt_sets, pred_sets, labels=canonical_lines)
+        h_loss = multilabel_hamming_loss(gt_sets, pred_sets, labels=canonical_lines)
 
         task_metrics = {
             # Headline metrics
             "sample_precision": prf.get("mean_precision", 0.0),
             "sample_recall": prf.get("mean_recall", 0.0),
             "sample_f1": prf.get("mean_f1", 0.0),
+            "sample_jaccard": prf.get("mean_jaccard", 0.0),
             "snr_weighted_recall": snr_m.get("mean_snr_weighted_recall", 0.0),
             "snr_weighted_f1": snr_m.get("mean_snr_weighted_f1", 0.0),
             # Dataset-level micro metrics
             "dataset_precision": micro_prf.get("micro_precision", 0.0),
             "dataset_recall": micro_prf.get("micro_recall", 0.0),
             "dataset_f1": micro_prf.get("micro_f1", 0.0),
+            "dataset_jaccard": micro_prf.get("micro_jaccard", 0.0),
             "dataset_micro_snr_weighted_recall": micro_snr.get("micro_snr_weighted_recall", 0.0),
             "dataset_micro_snr_weighted_f1": micro_snr.get("micro_snr_weighted_f1", 0.0),
-            # Macro & Exact Match
+            # Macro, Exact Match, and Hamming Loss
             "dataset_macro_f1": macro_f1_val,
             "exact_match_rate": exact,
+            "hamming_loss": h_loss,
             "format_errors": n_format_errors,
             # Structured dicts
             "sample_level": {
@@ -364,7 +419,12 @@ def format_markdown_table(headers: List[str], rows: List[List[str]], alignments:
     return "\n".join(lines)
 
 
-def print_metrics_summary(filepath: Path, summary: Dict[str, Any], is_multilabel: bool):
+def print_metrics_summary(
+    filepath: Path,
+    summary: Dict[str, Any],
+    is_multilabel: bool,
+    metadata: Optional[Dict[str, Any]] = None,
+):
     """Print clean formatted tables directly to stdout."""
     task_name = summary.get("task_name", "Evaluation")
     total = summary.get("total_samples", 0)
@@ -373,23 +433,34 @@ def print_metrics_summary(filepath: Path, summary: Dict[str, Any], is_multilabel
 
     print("\n" + "=" * 80)
     print(f"📊 EVALUATION REPORT: {task_name.upper()}")
-    print(f"📁 Source: {filepath}")
+    print(f"📁 Results Path:     {filepath}")
+    if metadata:
+        if metadata.get("captions_source"):
+            print(f"📝 Captions Source:  {metadata['captions_source']}")
+        if metadata.get("split"):
+            print(f"🔀 Dataset Split:    {metadata['split']}")
+        if metadata.get("frontier_model"):
+            print(f"🤖 Frontier Judge:   {metadata['frontier_model']}")
+        if metadata.get("timestamp"):
+            print(f"⏱️  Run Timestamp:    {metadata['timestamp']}")
     print("=" * 80)
     print(f"Total Samples: {total}")
 
     if is_multilabel:
         exact = tm.get("exact_match_rate", 0.0) * 100
+        hl = tm.get("hamming_loss", 0.0)
         fmt_err = tm.get("format_errors", 0)
-        print(f"Exact Match Rate: {exact:.2f}% | Parse Errors: {fmt_err}\n")
+        print(f"Exact Match Rate: {exact:.2f}% | Hamming Loss: {hl:.4f} (lower is better) | Parse Errors: {fmt_err}\n")
 
         print("--- 1. Headline Metrics ---")
-        headers = ["Metric Category", "Precision", "Recall", "F1-Score", "SNR-Weighted F1"]
+        headers = ["Metric Category", "Precision", "Recall", "F1-Score", "Jaccard (IoU)", "SNR-Weighted F1"]
         rows = [
             [
                 "**Sample-Mean**",
                 f"{tm.get('sample_precision', 0.0):.4f}",
                 f"{tm.get('sample_recall', 0.0):.4f}",
                 f"{tm.get('sample_f1', 0.0):.4f}",
+                f"{tm.get('sample_jaccard', 0.0):.4f}",
                 f"{tm.get('snr_weighted_f1', 0.0):.4f}",
             ],
             [
@@ -397,6 +468,7 @@ def print_metrics_summary(filepath: Path, summary: Dict[str, Any], is_multilabel
                 f"{tm.get('dataset_precision', 0.0):.4f}",
                 f"{tm.get('dataset_recall', 0.0):.4f}",
                 f"{tm.get('dataset_f1', 0.0):.4f}",
+                f"{tm.get('dataset_jaccard', 0.0):.4f}",
                 f"{tm.get('dataset_micro_snr_weighted_f1', 0.0):.4f}",
             ],
             [
@@ -405,9 +477,10 @@ def print_metrics_summary(filepath: Path, summary: Dict[str, Any], is_multilabel
                 "-",
                 f"{tm.get('dataset_macro_f1', 0.0):.4f}",
                 "-",
+                "-",
             ],
         ]
-        aligns = [":---", ":---:", ":---:", ":---:", ":---:"]
+        aligns = [":---", ":---:", ":---:", ":---:", ":---:", ":---:"]
         print(format_markdown_table(headers, rows, aligns))
 
         # Per-line table
@@ -469,6 +542,7 @@ def generate_report_md(
     is_multilabel: bool,
     filepath: Path,
     records: Optional[List[Dict[str, Any]]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Generate Markdown report string."""
     task_name = summary.get("task_name", "Evaluation")
@@ -479,11 +553,22 @@ def generate_report_md(
         f"# Evaluation Report: {task_name}",
         "",
         f"**Source file:** `{filepath.name}`  ",
+    ]
+    if metadata:
+        if metadata.get("captions_source"):
+            lines.append(f"**Captions Source:** `{metadata['captions_source']}`  ")
+        if metadata.get("split"):
+            lines.append(f"**Dataset Split:** `{metadata['split']}`  ")
+        if metadata.get("frontier_model"):
+            lines.append(f"**Frontier Judge:** `{metadata['frontier_model']}`  ")
+        if metadata.get("timestamp"):
+            lines.append(f"**Run Timestamp:** `{metadata['timestamp']}`  ")
+    lines.extend([
         f"**Total Samples:** {summary.get('total_samples')}  ",
         "",
         "## 1. Executive Summary",
         "",
-    ]
+    ])
 
     if is_multilabel:
         headers = ["Metric", "Value"]
@@ -491,11 +576,14 @@ def generate_report_md(
             ["**Sample-Mean Precision**", f"{tm.get('sample_precision', 0.0):.4f}"],
             ["**Sample-Mean Recall**", f"{tm.get('sample_recall', 0.0):.4f}"],
             ["**Sample-Mean F1**", f"{tm.get('sample_f1', 0.0):.4f}"],
+            ["**Sample-Mean Jaccard (IoU)**", f"{tm.get('sample_jaccard', 0.0):.4f}"],
             ["**Dataset-Level (Micro) Precision**", f"{tm.get('dataset_precision', 0.0):.4f}"],
             ["**Dataset-Level (Micro) Recall**", f"{tm.get('dataset_recall', 0.0):.4f}"],
             ["**Dataset-Level (Micro) F1**", f"{tm.get('dataset_f1', 0.0):.4f}"],
+            ["**Dataset-Level (Micro) Jaccard**", f"{tm.get('dataset_jaccard', 0.0):.4f}"],
             ["**Dataset-Level Macro F1**", f"{tm.get('dataset_macro_f1', 0.0):.4f}"],
             ["**Exact Match Rate**", f"{tm.get('exact_match_rate', 0.0) * 100:.2f}%"],
+            ["**Hamming Loss (lower is better)**", f"{tm.get('hamming_loss', 0.0):.4f}"],
             ["**SNR-Weighted Recall (Sample)**", f"{tm.get('snr_weighted_recall', 0.0):.4f}"],
             ["**SNR-Weighted F1 (Sample)**", f"{tm.get('snr_weighted_f1', 0.0):.4f}"],
             ["**SNR-Weighted F1 (Dataset Micro)**", f"{tm.get('dataset_micro_snr_weighted_f1', 0.0):.4f}"],
@@ -637,10 +725,13 @@ def process_file(
         else:
             task_name = "classification"
 
+    metadata = extract_run_metadata(filepath, records)
     summary = compute_metrics_for_records(records, is_multilabel, task_name)
+    if metadata:
+        summary["run_metadata"] = metadata
 
     # Print summary to stdout
-    print_metrics_summary(filepath, summary, is_multilabel)
+    print_metrics_summary(filepath, summary, is_multilabel, metadata=metadata)
 
     # Save to disk if requested
     if not no_save:
@@ -653,7 +744,7 @@ def process_file(
         print(f"💾 Saved JSON metrics to: {metrics_file}")
 
         report_file = save_dir / "report.md"
-        report_content = generate_report_md(summary, is_multilabel, filepath, records=records)
+        report_content = generate_report_md(summary, is_multilabel, filepath, records=records, metadata=metadata)
         with open(report_file, "w") as f:
             f.write(report_content)
         print(f"📝 Saved Markdown report to: {report_file}")

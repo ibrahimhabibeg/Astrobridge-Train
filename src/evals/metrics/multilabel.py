@@ -74,31 +74,36 @@ def sample_precision_recall_f1(
     precisions = []
     recalls = []
     f1s = []
+    jaccards = []
 
     for gt, pred in zip(gt_sets, pred_sets):
         tp = len(gt & pred)
         n_pred = len(pred)
         n_gt = len(gt)
+        union = len(gt | pred)
 
         if n_pred == 0 and n_gt == 0:
-            p, r, f1 = 1.0, 1.0, 1.0
+            p, r, f1, jacc = 1.0, 1.0, 1.0, 1.0
         elif n_pred == 0:
-            p, r, f1 = 1.0, 0.0, 0.0
+            p, r, f1, jacc = 1.0, 0.0, 0.0, 0.0
         elif n_gt == 0:
-            p, r, f1 = 0.0, 1.0, 0.0
+            p, r, f1, jacc = 0.0, 1.0, 0.0, 0.0
         else:
             p = tp / n_pred
             r = tp / n_gt
             f1 = _safe_div(2 * p * r, p + r)
+            jacc = _safe_div(tp, union)
 
         precisions.append(p)
         recalls.append(r)
         f1s.append(f1)
+        jaccards.append(jacc)
 
     return {
         "mean_precision": float(np.mean(precisions)) if precisions else 0.0,
         "mean_recall": float(np.mean(recalls)) if recalls else 0.0,
         "mean_f1": float(np.mean(f1s)) if f1s else 0.0,
+        "mean_jaccard": float(np.mean(jaccards)) if jaccards else 0.0,
     }
 
 
@@ -110,14 +115,14 @@ def micro_precision_recall_f1(
     gt_sets: List[Set[str]],
     pred_sets: List[Set[str]],
 ) -> Dict[str, float]:
-    """Pool all TPs, FPs, and FNs across every sample, then compute F1.
+    """Pool all TPs, FPs, and FNs across every sample, then compute F1 and Jaccard.
 
     Unlike sample-mean F1, samples with more labels contribute more
     to the final score. This metric is biased toward frequently
     occurring labels.
 
     Returns:
-        Dict with keys: micro_precision, micro_recall, micro_f1.
+        Dict with keys: micro_precision, micro_recall, micro_f1, micro_jaccard.
     """
     total_tp = 0
     total_pred = 0
@@ -132,11 +137,14 @@ def micro_precision_recall_f1(
     mic_p = _safe_div(total_tp, total_pred)
     mic_r = _safe_div(total_tp, total_gt)
     mic_f1 = _safe_div(2 * mic_p * mic_r, mic_p + mic_r)
+    total_union = total_pred + total_gt - total_tp
+    mic_jacc = _safe_div(total_tp, total_union)
 
     return {
         "micro_precision": float(mic_p),
         "micro_recall": float(mic_r),
         "micro_f1": float(mic_f1),
+        "micro_jaccard": float(mic_jacc),
     }
 
 
@@ -160,6 +168,37 @@ def exact_match_rate(
         return 0.0
     matches = sum(1 for gt, pred in zip(gt_sets, pred_sets) if gt == pred)
     return matches / len(gt_sets)
+
+
+# ---------------------------------------------------------------------------
+# Hamming loss
+# ---------------------------------------------------------------------------
+
+def multilabel_hamming_loss(
+    gt_sets: List[Set[str]],
+    pred_sets: List[Set[str]],
+    labels: List[str],
+) -> float:
+    """Fraction of all (sample, label) pairs that are misclassified.
+
+    Hamming Loss = (Total FP + Total FN) / (N * L).
+    Lower is better: 0.0 = perfect agreement, 1.0 = completely inverted.
+
+    Args:
+        gt_sets: List of ground-truth label sets.
+        pred_sets: List of predicted label sets.
+        labels: List of candidate labels evaluated.
+
+    Returns:
+        Hamming loss as a float in [0, 1].
+    """
+    if not gt_sets or not labels:
+        return 0.0
+    mlb = MultiLabelBinarizer(classes=labels)
+    mlb.fit([set(labels)])
+    yt = mlb.transform(gt_sets)
+    yp = mlb.transform(pred_sets)
+    return float(np.mean(yt != yp))
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +443,7 @@ def multilabel_report(
     micro_snr = micro_snr_weighted_metrics(gt_dicts, pred_sets)
     plr = per_label_report(gt_sets, pred_sets, labels, gt_dicts=gt_dicts)
     macro_f1 = macro_label_f1(gt_sets, pred_sets, labels)
+    hl = multilabel_hamming_loss(gt_sets, pred_sets, labels)
 
     n_exact = int(exact * len(gt_sets)) if gt_sets else 0
 
@@ -412,6 +452,7 @@ def multilabel_report(
         "evaluated_samples": len(gt_dicts),
         "exact_matches": n_exact,
         "exact_match_rate": exact,
+        "hamming_loss": hl,
         "format_errors": n_format_errors,
         "sample_level": sample,
         "dataset_micro_level": {
