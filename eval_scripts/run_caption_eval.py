@@ -19,11 +19,20 @@ Usage:
 import argparse
 import json
 import os
+import sys
+from pathlib import Path
 import subprocess
 from datetime import datetime
 import dotenv
 import yaml
 import numpy as np
+
+# Ensure repo root and src/ are in sys.path
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if str(_REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 # Modal setup
 try:
@@ -62,6 +71,8 @@ try:
         .run_function(download_models)
         .add_local_dir("src", remote_path="/root/src")
         .add_local_dir("configs", remote_path="/root/configs")
+        .add_local_dir("eval_scripts", remote_path="/root/eval_scripts")
+        .add_local_dir("eval_configs", remote_path="/root/eval_configs")
     )
 
     @app.function(
@@ -69,78 +80,53 @@ try:
         timeout=86400,
         volumes={"/outputs": volume},
     )
-    def generate_captions_remote(responder_config: dict, timestamp_dir: str, limit: int = None, caption_prompt: str = None):
+    def generate_captions_remote(
+        responder_config: dict,
+        timestamp_dir: str,
+        benchmark: str = "all",
+        limit: int = None,
+        batch_size: int = 32,
+        caption_prompt: str = None,
+    ):
+        """Remote function executing GPU caption generation on Modal by calling the local script logic."""
         import sys
+        sys.path.insert(0, "/root")
         sys.path.insert(0, "/root/src")
         os.chdir("/root")
 
-        import torch
-        from evals.caption_responders import CaptionSample, get_caption_responder
-        from evals.data import load_all_benchmark_spectra
-        from tqdm import tqdm
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        responder = get_caption_responder(responder_config, device)
-        df_test = load_all_benchmark_spectra()
-
-        if limit is not None:
-            df_test = df_test.head(limit)
+        from eval_scripts.generate_captions import run_caption_generation
 
         out_dir = os.path.join("/outputs", timestamp_dir)
         os.makedirs(out_dir, exist_ok=True)
-        captions_path = os.path.join(out_dir, "captions.jsonl")
+        captions_file = os.path.join(out_dir, "captions.jsonl")
 
-        batch_size = responder_config.get("batch_size", 32)
-        def chunker(seq, size):
-            return (seq[pos : pos + size] for pos in range(0, len(seq), size))
-
-        with open(captions_path, "w") as out_f:
-            for batch_df in tqdm(list(chunker(df_test, batch_size)), desc="Remote Caption Generation"):
-                samples = []
-                surveys = batch_df["survey"].tolist() if "survey" in batch_df.columns else ["sdss"] * len(batch_df)
-
-                for i, (_, row) in enumerate(batch_df.iterrows()):
-                    spec_data = row["spectrum"]
-                    flux = np.array(spec_data["flux"])
-                    wavelength = np.array(spec_data["lambda"])
-                    mask = (
-                        np.array(spec_data["mask"]).astype(bool)
-                        if "mask" in spec_data
-                        else np.zeros_like(flux, dtype=bool)
-                    )
-                    ivar = np.array(spec_data["ivar"]) if "ivar" in spec_data else None
-                    samples.append(
-                        CaptionSample(
-                            sample_id=str(row["sample_id"]),
-                            wavelength=wavelength,
-                            flux=flux,
-                            mask=mask,
-                            survey=surveys[i],
-                            ivar=ivar,
-                        )
-                    )
-
-                captions = responder.generate_captions(samples, prompt_override=caption_prompt)
-                for c in captions:
-                    record = {
-                        "sample_id": c.sample_id,
-                        "object_id": c.sample_id,
-                        "survey": c.survey,
-                        "caption": c.caption,
-                        "responder_type": c.responder_type,
-                        "model_id": c.model_id,
-                        "caption_prompt": c.caption_prompt,
-                    }
-                    out_f.write(json.dumps(record) + "\n")
-
+        total = run_caption_generation(
+            responder_config=responder_config,
+            output_path=captions_file,
+            benchmark=benchmark or "all",
+            limit=limit,
+            batch_size=batch_size,
+            caption_prompt=caption_prompt,
+        )
         volume.commit()
+        print(f"[Modal Remote] Done. Successfully generated and committed {total} captions in {captions_file}")
         return timestamp_dir
 
 except ImportError:
     app = None
 
 
-def main_local(task: str, frontier: str, responder: str = None, captions: str = None, limit: int = None, caption_prompt: str = None, gemini_model: str = None, gpu: str = None):
+def main_local(
+    task: str,
+    frontier: str,
+    responder: str = None,
+    captions: str = None,
+    limit: int = None,
+    batch_size: int = 32,
+    caption_prompt: str = None,
+    gemini_model: str = None,
+    gpu: str = None,
+):
     dotenv.load_dotenv()
     with open(task, "r") as f:
         task_config = yaml.safe_load(f)
@@ -155,7 +141,7 @@ def main_local(task: str, frontier: str, responder: str = None, captions: str = 
     if gemini_model:
         frontier_config["gemini_model"] = gemini_model
 
-    resp_tag = responder_config.get("responder_type") if responder_config else "cached"
+    resp_tag = responder_config.get("responder_type") if responder_config else "cached_captions"
     task_name = task_config.get("name", "task")
     timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{task_name}")
 
@@ -176,13 +162,19 @@ def main_local(task: str, frontier: str, responder: str = None, captions: str = 
                 output_dir=local_output_dir,
                 limit=limit,
                 caption_prompt_override=caption_prompt,
+                batch_size=batch_size,
             )
             return
         else:
             gpu_type = gpu or responder_config.get("gpu", "A100-80GB")
             print(f"Running Caption Generation REMOTELY on Modal GPU ({gpu_type})...")
             generate_captions_remote.with_options(gpu=gpu_type).remote(
-                responder_config, timestamp_dir, limit=limit, caption_prompt=caption_prompt
+                responder_config=responder_config,
+                timestamp_dir=timestamp_dir,
+                benchmark=task_name,
+                limit=limit,
+                batch_size=batch_size,
+                caption_prompt=caption_prompt,
             )
             print("Caption generation completed on Modal. Syncing captions to local output dir...")
             subprocess.run(
@@ -205,6 +197,10 @@ def main_local(task: str, frontier: str, responder: str = None, captions: str = 
     )
 
 
+if app is not None:
+    main = app.local_entrypoint()(main_local)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Unified caption evaluation script.")
     parser.add_argument("--task", type=str, required=True, help="Path to task YAML config.")
@@ -212,6 +208,7 @@ if __name__ == "__main__":
     parser.add_argument("--responder", type=str, default=None, help="Path to responder YAML config.")
     parser.add_argument("--captions", type=str, default=None, help="Path to captions.jsonl.")
     parser.add_argument("--limit", type=int, default=None, help="Sample limit.")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for captioning.")
     parser.add_argument("--caption-prompt", type=str, default=None, help="Prompt override.")
     parser.add_argument("--gemini-model", type=str, default=None, help="Gemini model override.")
     parser.add_argument("--gpu", type=str, default=None, help="GPU override for Modal.")
@@ -223,6 +220,7 @@ if __name__ == "__main__":
         responder=args.responder,
         captions=args.captions,
         limit=args.limit,
+        batch_size=args.batch_size,
         caption_prompt=args.caption_prompt,
         gemini_model=args.gemini_model,
         gpu=args.gpu,

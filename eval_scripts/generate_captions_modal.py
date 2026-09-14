@@ -22,10 +22,14 @@ import subprocess
 from datetime import datetime
 import yaml
 
-import modal
-
-volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
-app = modal.App("astrobridge-caption-generation")
+try:
+    import modal
+    volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
+    app = modal.App("astrobridge-caption-generation")
+except ImportError:
+    modal = None
+    volume = None
+    app = None
 
 
 def download_models():
@@ -55,125 +59,58 @@ def download_models():
         )
 
 
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install_from_pyproject("pyproject.toml")
-    .pip_install("huggingface_hub", "pyyaml", "tqdm", "matplotlib", "Pillow", "torchvision")
-    .run_function(download_models)
-    .add_local_dir("src", remote_path="/root/src")
-    .add_local_dir("configs", remote_path="/root/configs")
-)
-
-
-@app.function(
-    image=image,
-    timeout=86400,
-    volumes={"/outputs": volume},
-)
-def generate_captions_remote(
-    responder_config: dict,
-    timestamp_dir: str,
-    benchmark: str = "all",
-    limit: int = None,
-    batch_size: int = 32,
-    caption_prompt: str = None,
-    split: str = None,
-):
-    """Remote function executing GPU caption generation on Modal."""
-    import sys
-    sys.path.insert(0, "/root/src")
-    os.chdir("/root")
-
-    import numpy as np
-    import torch
-    from tqdm import tqdm
-
-    from evals.caption_responders import CaptionSample, get_caption_responder
-    from evals.data import (
-        load_all_benchmark_spectra,
-        load_benchmark_dataset,
+if app is not None:
+    image = (
+        modal.Image.debian_slim(python_version="3.10")
+        .pip_install_from_pyproject("pyproject.toml")
+        .pip_install("huggingface_hub", "pyyaml", "tqdm", "matplotlib", "Pillow", "torchvision")
+        .run_function(download_models)
+        .add_local_dir("src", remote_path="/root/src")
+        .add_local_dir("configs", remote_path="/root/configs")
+        .add_local_dir("eval_scripts", remote_path="/root/eval_scripts")
+        .add_local_dir("eval_configs", remote_path="/root/eval_configs")
     )
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[Modal Remote] Initializing {responder_config.get('responder_type')} on {device}...")
-    responder = get_caption_responder(responder_config, device)
+    @app.function(
+        image=image,
+        timeout=86400,
+        volumes={"/outputs": volume},
+    )
+    def generate_captions_remote(
+        responder_config: dict,
+        timestamp_dir: str,
+        benchmark: str = "all",
+        limit: int = None,
+        batch_size: int = 32,
+        caption_prompt: str = None,
+        split: str = None,
+    ):
+        """Remote function executing GPU caption generation on Modal by calling the local script logic."""
+        import sys
+        sys.path.insert(0, "/root")
+        sys.path.insert(0, "/root/src")
+        os.chdir("/root")
 
-    bench = benchmark or "all"
-    print(f"[Modal Remote] Loading benchmark data for target '{bench}'...")
-    if bench == "all":
-        df_test = load_all_benchmark_spectra()
-    else:
-        df_test = load_benchmark_dataset(bench)
+        from eval_scripts.generate_captions import run_caption_generation
 
-    if limit is not None:
-        print(f"[Modal Remote] Limiting to first {limit} samples.")
-        df_test = df_test.head(limit)
+        out_dir = os.path.join("/outputs", timestamp_dir)
+        os.makedirs(out_dir, exist_ok=True)
+        captions_file = os.path.join(out_dir, "captions.jsonl")
 
-    total_expected = len(df_test)
-    print(f"[Modal Remote] Starting caption generation for {total_expected} benchmark spectra...")
-
-    out_dir = os.path.join("/outputs", timestamp_dir)
-    os.makedirs(out_dir, exist_ok=True)
-    captions_file = os.path.join(out_dir, "captions.jsonl")
-
-    def chunker(seq, size):
-        return (seq[pos : pos + size] for pos in range(0, len(seq), size))
-
-    total = 0
-    with open(captions_file, "w") as out_f:
-        for batch_df in tqdm(list(chunker(df_test, batch_size)), desc="[Modal] Generating Captions"):
-            samples = []
-            surveys = batch_df["survey"].tolist() if "survey" in batch_df.columns else ["sdss"] * len(batch_df)
-
-            for i, (_, row) in enumerate(batch_df.iterrows()):
-                spec_data = row["spectrum"]
-                flux = np.array(spec_data["flux"])
-                wavelength = np.array(spec_data["lambda"])
-                mask = (
-                    np.array(spec_data["mask"]).astype(bool)
-                    if "mask" in spec_data
-                    else np.zeros_like(flux, dtype=bool)
-                )
-                ivar = np.array(spec_data["ivar"]) if "ivar" in spec_data else None
-                samples.append(
-                    CaptionSample(
-                        sample_id=str(row["sample_id"]),
-                        wavelength=wavelength,
-                        flux=flux,
-                        mask=mask,
-                        survey=surveys[i],
-                        ivar=ivar,
-                    )
-                )
-
-            captions = responder.generate_captions(samples, prompt_override=caption_prompt)
-            for c in captions:
-                record = {
-                    "sample_id": c.sample_id,
-                    "object_id": c.sample_id,
-                    "survey": c.survey,
-                    "caption": c.caption,
-                    "responder_type": c.responder_type,
-                    "model_id": c.model_id,
-                    "caption_prompt": c.caption_prompt,
-                }
-                out_f.write(json.dumps(record) + "\n")
-                total += 1
-
-            out_f.flush()
-            volume.commit()
-
-    volume.commit()
-
-    if total != total_expected:
-        print(f"[Modal Remote] WARNING: Generated {total} captions but expected {total_expected}!")
-    else:
-        print(f"[Modal Remote] Done. Successfully generated all {total}/{total_expected} captions in {captions_file}")
-    return timestamp_dir
+        total = run_caption_generation(
+            responder_config=responder_config,
+            output_path=captions_file,
+            benchmark=benchmark or "all",
+            limit=limit,
+            batch_size=batch_size,
+            caption_prompt=caption_prompt,
+        )
+        volume.commit()
+        print(f"[Modal Remote] Done. Successfully generated and committed {total} captions in {captions_file}")
+        return timestamp_dir
 
 
-@app.local_entrypoint()
-def main(
+def main_local(
     responder: str,
     output: str = None,
     benchmark: str = "all",
@@ -246,7 +183,8 @@ def main(
     print(f"  uv run eval_scripts/run_caption_eval_local.py \\")
     print(f"      --task eval_configs/caption_tasks/distance.yaml \\")
     print(f"      --captions {final_output_path} \\")
-    print(f"      --frontier eval_configs/frontier/gemini.yaml")
+if app is not None:
+    main = app.local_entrypoint()(main_local)
 
 
 if __name__ == "__main__":

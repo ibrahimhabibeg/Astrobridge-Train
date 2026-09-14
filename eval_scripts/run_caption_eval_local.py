@@ -24,12 +24,20 @@ Usage:
 import argparse
 import json
 import os
+import sys
+from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import dotenv
 import numpy as np
 import yaml
 from tqdm import tqdm
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if str(_REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 from evals.caption_responders import CaptionSample, get_caption_responder
 from evals.caption_tasks import get_caption_task
@@ -94,53 +102,24 @@ def run_caption_evaluation(
         matched_count = len(captions_by_id)
         print(f"Matched {matched_count}/{total_in_file} captions against benchmark ({len(gt_by_id)} target samples).")
     elif responder_config:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Initializing caption responder '{responder_config.get('responder_type')}' on {device}...")
-        responder = get_caption_responder(responder_config, device)
-
-        def chunker(seq, size):
-            return (seq[pos : pos + size] for pos in range(0, len(seq), size))
-
-        print(f"Generating captions for {len(df_test)} benchmark spectra...")
-        with open(os.path.join(output_dir, "captions.jsonl"), "w") as cap_f:
-            for batch_df in tqdm(list(chunker(df_test, batch_size)), desc="Stage 1: Caption Generation"):
-                samples = []
-                surveys = batch_df["survey"].tolist() if "survey" in batch_df.columns else ["sdss"] * len(batch_df)
-
-                for i, (_, row) in enumerate(batch_df.iterrows()):
-                    spec_data = row["spectrum"]
-                    flux = np.array(spec_data["flux"])
-                    wavelength = np.array(spec_data["lambda"])
-                    mask = (
-                        np.array(spec_data["mask"]).astype(bool)
-                        if "mask" in spec_data
-                        else np.zeros_like(flux, dtype=bool)
-                    )
-                    ivar = np.array(spec_data["ivar"]) if "ivar" in spec_data else None
-                    samples.append(
-                        CaptionSample(
-                            sample_id=str(row["sample_id"]),
-                            wavelength=wavelength,
-                            flux=flux,
-                            mask=mask,
-                            survey=surveys[i],
-                            ivar=ivar,
-                        )
-                    )
-
-                gen_captions = responder.generate_captions(samples, prompt_override=caption_prompt_override)
-                for c in gen_captions:
-                    rec = {
-                        "sample_id": c.sample_id,
-                        "object_id": c.sample_id,
-                        "survey": c.survey,
-                        "caption": c.caption,
-                        "responder_type": c.responder_type,
-                        "model_id": c.model_id,
-                        "caption_prompt": c.caption_prompt,
-                    }
-                    captions_by_id[c.sample_id] = rec
-                    cap_f.write(json.dumps(rec) + "\n")
+        captions_path = os.path.join(output_dir, "captions.jsonl")
+        from eval_scripts.generate_captions import run_caption_generation
+        run_caption_generation(
+            responder_config=responder_config,
+            output_path=captions_path,
+            benchmark=task_name,
+            limit=limit,
+            batch_size=batch_size,
+            caption_prompt=caption_prompt_override,
+            df=df_test,
+        )
+        with open(captions_path, "r") as f:
+            for line in f:
+                if line.strip():
+                    item = json.loads(line)
+                    sid = str(item.get("sample_id") or item.get("object_id") or item.get("wiki_entity_id"))
+                    if sid in gt_by_id:
+                        captions_by_id[sid] = item
     else:
         raise ValueError("Must provide either responder configuration or --captions file.")
 
