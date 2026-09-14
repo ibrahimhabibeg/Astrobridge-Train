@@ -182,6 +182,22 @@ def _resolve_system_instruction(prompt_cfg, shown: frozenset[str], question: str
 
 
 @torch.no_grad()
+def _stop_token_ids(tokenizer) -> list[int]:
+    """The ids `generate()` must stop on for the equipped path.
+
+    `Qwen3_5Config` carries NO `eos_token_id` (checked live — it raises AttributeError), and we call
+    `model.llm.generate()` directly rather than going through the model's own generation_config, so
+    without this the caption never terminates: the model emits `<|im_end|>` at the true end of its
+    turn, generation keeps going to `max_new_tokens`, and it hallucinates a whole second user/
+    assistant turn. `skip_special_tokens=True` then strips the markers, leaving bare "user" /
+    "assistant" / "<think>" text welded onto the caption. That corrupted 73% of a v7 run before this
+    was caught, and 12/266 of the earlier v5 run. The base side never had it because Qwen's own
+    generation_config supplies the stop token.
+    """
+    ids = {tokenizer.eos_token_id, tokenizer.convert_tokens_to_ids("<|im_end|>")}
+    return sorted(i for i in ids if i is not None and i >= 0)
+
+
 def generate_caption(
     model: Captioner,
     tokenizer,
@@ -233,8 +249,94 @@ def generate_caption(
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             do_sample=False,
+            eos_token_id=_stop_token_ids(tokenizer),
         )
     return tokenizer.batch_decode(gen, skip_special_tokens=True)[0]
+
+
+@torch.no_grad()
+def generate_captions_batched(
+    model: Captioner,
+    tokenizer,
+    encoders: dict,
+    modality_out_dims: dict[str, int],
+    modality_max_tokens: dict[str, int],
+    prompt_cfg,
+    device: str,
+    raw_inputs_list: list[dict[str, dict[str, Any]]],
+    max_new_tokens: int = 128,
+    question: str | None = None,
+    system: str | None = None,
+) -> list[str]:
+    """`generate_caption` over B objects in one forward pass — same prompt construction, same
+    greedy decoding, one caption per input, in order.
+
+    Why: single-sequence decode on a 9B model is memory-bandwidth-bound, not compute-bound. Each
+    decode step reads the full ~18GB of weights from HBM to emit ONE token, so the GPU idles on
+    memory. Batching reads those weights once per step and emits B tokens — nearly free until the
+    batch is large enough to become compute-bound. VRAM cost is small: only 8 of Qwen3.5-9B's 32
+    layers are full attention (the other 24 are linear-attention with fixed-size state), so the KV
+    cache is tens of MB per sequence against ~18GB of fixed weights.
+
+    **Left padding, not right.** Training pads right (loss is masked per position, so trailing pad
+    is harmless). Generation must pad LEFT: every sequence has to END at the same index, or the
+    "next token" position differs per row and the model continues from the wrong place — which
+    yields subtly wrong captions rather than an error. `tests/test_inference.py` asserts the last
+    mask column is real for every row; A/B a few objects against `generate_caption` after changing
+    anything here.
+    """
+    B = len(raw_inputs_list)
+    if B == 0:
+        return []
+    if any(not raw for raw in raw_inputs_list):
+        raise ValueError("a raw_inputs entry is empty — every object needs at least one modality.")
+
+    modality_batch: dict[str, dict[str, torch.Tensor]] = {}
+    for name, out_dim in modality_out_dims.items():
+        T_m = modality_max_tokens[name]
+        tokens = torch.zeros((B, T_m, out_dim), dtype=torch.float32, device=device)
+        mask = torch.ones((B, T_m), dtype=torch.bool, device=device)  # True = pad/absent
+        for i, raw in enumerate(raw_inputs_list):
+            if name in raw:
+                raw_tokens = encoders[name].encode(raw[name]).to(torch.float32)  # (1, T_raw, out_dim)
+                n = min(raw_tokens.shape[1], T_m)
+                tokens[i, :n] = raw_tokens[0, :n].to(device)
+                mask[i, :n] = False
+        modality_batch[name] = {"tokens": tokens, "mask": mask}
+
+    pre_ids_list, post_ids_list = [], []
+    for raw in raw_inputs_list:
+        sys_i, instr_i = _resolve_system_instruction(prompt_cfg, frozenset(raw.keys()), question, system)
+        pre_text, post_text = build_wrapper_text(prompt_cfg, sys_i, instr_i)
+        pre_ids_list.append(tokenizer(pre_text, add_special_tokens=False, return_tensors="pt")["input_ids"].to(device))
+        post_ids_list.append(tokenizer(post_text, add_special_tokens=False, return_tensors="pt")["input_ids"].to(device))
+
+    device_type = "cuda" if str(device).startswith("cuda") else "cpu"
+    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+        prefix = model.fusion_stack(modality_batch)  # (B, n_queries, d_llm)
+        embed_fn = model.llm.get_input_embeddings()
+        seqs = [
+            torch.cat([embed_fn(pre_ids_list[i])[0], prefix[i], embed_fn(post_ids_list[i])[0]], dim=0)
+            for i in range(B)
+        ]
+        L = max(s.shape[0] for s in seqs)
+        inputs_embeds = torch.zeros((B, L, seqs[0].shape[-1]), dtype=seqs[0].dtype, device=device)
+        attention_mask = torch.zeros((B, L), dtype=torch.long, device=device)
+        for i, s in enumerate(seqs):
+            inputs_embeds[i, L - s.shape[0]:] = s
+            attention_mask[i, L - s.shape[0]:] = 1
+
+        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+        gen = model.llm.generate(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=pad_id,
+            eos_token_id=_stop_token_ids(tokenizer),
+        )
+    return tokenizer.batch_decode(gen, skip_special_tokens=True)
+
 
 
 @torch.no_grad()
@@ -376,6 +478,46 @@ def generate_qwen_native_vision_answer(
         gen = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
 
     return processor.decode(gen[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
+
+
+@torch.no_grad()
+def generate_qwen_native_vision_answers_batched(
+    model, processor, device: str, question: str, images: list, max_new_tokens: int = 128,
+    enable_thinking: bool | None = None,
+) -> list[str]:
+    """Batched `generate_qwen_native_vision_answer` — same single-turn `{image, question}` message
+    through Qwen's own chat template, B images at once, answers in input order.
+
+    `padding_side` is forced to "left" for the duration and restored after: generation needs every
+    sequence to end at the same index (see `generate_captions_batched`), while the processor's
+    tokenizer defaults to right padding for training.
+    """
+    if not images:
+        return []
+
+    messages = [
+        [{"role": "user", "content": [{"type": "image", "image": im}, {"type": "text", "text": question}]}]
+        for im in images
+    ]
+    chat_template_kwargs = {} if enable_thinking is None else {"enable_thinking": enable_thinking}
+
+    previous_side = processor.tokenizer.padding_side
+    processor.tokenizer.padding_side = "left"
+    try:
+        inputs = processor.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True, return_dict=True,
+            return_tensors="pt", padding=True, **chat_template_kwargs,
+        ).to(device)
+    finally:
+        processor.tokenizer.padding_side = previous_side
+
+    device_type = "cuda" if str(device).startswith("cuda") else "cpu"
+    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+        gen = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+
+    n_prompt = inputs["input_ids"].shape[-1]
+    return [processor.decode(g[n_prompt:], skip_special_tokens=True) for g in gen]
+
 
 
 @torch.no_grad()

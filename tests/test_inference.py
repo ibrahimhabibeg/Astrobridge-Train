@@ -10,7 +10,13 @@ import pytest
 import torch
 import torch.nn as nn
 
-from captioner.inference import generate_caption, score_completions, score_completions_qwen_native
+from captioner.inference import (
+    _stop_token_ids,
+    generate_caption,
+    generate_captions_batched,
+    score_completions,
+    score_completions_qwen_native,
+)
 from captioner.model.captioner import IGNORE_INDEX, Captioner, FusionStack
 from tests.conftest import make_prompt_cfg
 
@@ -29,14 +35,22 @@ class _FakeBF16LLM(nn.Module):
     def get_input_embeddings(self):
         return self.embed
 
-    def generate(self, inputs_embeds, attention_mask, max_new_tokens, do_sample):
+    def generate(self, inputs_embeds, attention_mask, max_new_tokens, do_sample, pad_token_id=None,
+                 eos_token_id=None):
         self.proj(inputs_embeds)  # dtype-sensitive, exercises the same real crash if unreconciled
+        self.last_attention_mask = attention_mask
+        self.eos_token_id_passed = eos_token_id
         return torch.zeros(inputs_embeds.shape[0], max_new_tokens, dtype=torch.long)
 
 
 class _FakeTokenizer:
     def __init__(self):
         self.seen_prompts: list[str] = []
+        self.pad_token_id = 0  # real HF tokenizers expose this; the batched path reads it
+        self.eos_token_id = 1
+
+    def convert_tokens_to_ids(self, token):
+        return -1  # real tokenizers return -1 (or unk) for a token the vocab lacks
 
     def __call__(self, text, add_special_tokens=False, return_tensors="pt"):
         self.seen_prompts.append(text)
@@ -406,3 +420,141 @@ def test_score_completions_qwen_native_never_hand_splices_ids_and_is_length_inva
     # tensor reused across calls — the actual regression this test exists to catch.
     assert processor.seen_texts == [reasoning, reasoning + one_token_candidate, reasoning + two_token_candidate]
     assert scores[one_token_candidate] == pytest.approx(scores[two_token_candidate], abs=1e-3)
+
+
+# --- batched generation ---------------------------------------------------------------------
+
+
+class _VarLenTokenizer(_FakeTokenizer):
+    """Token count scales with text length, so different prompts produce different sequence
+    lengths — which is what makes the padding assertions below meaningful at all."""
+
+    def __call__(self, text, add_special_tokens=False, return_tensors="pt"):
+        self.seen_prompts.append(text)
+        return {"input_ids": torch.randint(0, 32, (1, max(1, len(text) // 20)))}
+
+
+def _raw(n: int) -> list[dict]:
+    return [{"image": {"pixel_values": torch.zeros(1, 1, 4, 4)}} for _ in range(n)]
+
+
+def test_batched_generation_returns_one_caption_per_input():
+    model, encoders, out_dims, max_tokens = _make_model_and_encoders()
+    captions = generate_captions_batched(
+        model, _FakeTokenizer(), encoders, out_dims, max_tokens, _PROMPT_CFG, "cpu",
+        raw_inputs_list=_raw(3), max_new_tokens=3,
+    )
+    assert captions == ["n=3"] * 3
+
+
+def test_batched_generation_pads_left_so_every_row_ends_at_the_last_position():
+    """The silent-corruption guard. Right padding would leave trailing pad on the shorter rows, so
+    the model would continue generation from the wrong position — wrong captions, no error."""
+    model, encoders, out_dims, max_tokens = _make_model_and_encoders()
+    tokenizer = _VarLenTokenizer()
+    generate_captions_batched(
+        model, tokenizer, encoders, out_dims, max_tokens, _PROMPT_CFG, "cpu",
+        raw_inputs_list=_raw(3), max_new_tokens=3,
+        question="Describe this object in considerable detail, band by band." * 3,
+    )
+    mask = model.llm.last_attention_mask
+    assert mask.shape[0] == 3
+    assert mask[:, -1].all(), "last column must be real for every row — that is what left padding means"
+    assert (mask.sum(dim=1) > 0).all()
+
+
+def test_batched_generation_on_an_empty_list_is_a_no_op():
+    model, encoders, out_dims, max_tokens = _make_model_and_encoders()
+    assert generate_captions_batched(
+        model, _FakeTokenizer(), encoders, out_dims, max_tokens, _PROMPT_CFG, "cpu",
+        raw_inputs_list=[], max_new_tokens=3,
+    ) == []
+
+
+def test_batched_generation_rejects_an_empty_raw_inputs_entry():
+    model, encoders, out_dims, max_tokens = _make_model_and_encoders()
+    with pytest.raises(ValueError, match="empty"):
+        generate_captions_batched(
+            model, _FakeTokenizer(), encoders, out_dims, max_tokens, _PROMPT_CFG, "cpu",
+            raw_inputs_list=[{"image": {"pixel_values": torch.zeros(1, 1, 4, 4)}}, {}], max_new_tokens=3,
+        )
+
+
+def test_batched_modality_mask_marks_absent_modalities_for_the_right_rows():
+    """Row 0 has image only, row 1 has both — the per-row mask must reflect that, not be shared."""
+    model, encoders, out_dims, max_tokens = _make_model_and_encoders()
+    captured = {}
+    original_forward = model.fusion_stack.forward
+
+    def _spy(modality_batch):
+        captured["batch"] = modality_batch
+        return original_forward(modality_batch)
+
+    model.fusion_stack.forward = _spy
+    generate_captions_batched(
+        model, _FakeTokenizer(), encoders, out_dims, max_tokens, _PROMPT_CFG, "cpu",
+        raw_inputs_list=[
+            {"image": {"pixel_values": torch.zeros(1, 1, 4, 4)}},
+            {
+                "image": {"pixel_values": torch.zeros(1, 1, 4, 4)},
+                "spectra": {"flux": torch.zeros(1, 6), "wavelength": torch.zeros(1, 6), "survey": ["desi"]},
+            },
+        ],
+        max_new_tokens=3,
+    )
+    spectra_mask = captured["batch"]["spectra"]["mask"]
+    assert spectra_mask[0].all()       # row 0: spectra absent => fully masked
+    assert not spectra_mask[1].any()   # row 1: spectra present => unmasked
+    assert not captured["batch"]["image"]["mask"].any()  # image present on both rows
+
+
+# --- stop tokens ----------------------------------------------------------------------------
+
+
+class _StopTokenTokenizer(_FakeTokenizer):
+    """Mirrors the real Qwen3.5 tokenizer's relevant surface: eos is <|im_end|>."""
+
+    _SPECIALS = {"<|im_end|>": 248046, "<|im_start|>": 248045}
+
+    def __init__(self):
+        super().__init__()
+        self.eos_token_id = 248046
+
+    def convert_tokens_to_ids(self, token):
+        return self._SPECIALS.get(token, -1)
+
+
+def test_stop_token_ids_includes_im_end():
+    assert 248046 in _stop_token_ids(_StopTokenTokenizer())
+
+
+def test_stop_token_ids_drops_unknown_tokens():
+    """convert_tokens_to_ids returns -1 for a token the vocab lacks — that must not reach generate()
+    as a stop id."""
+
+    class _NoImEnd(_StopTokenTokenizer):
+        def convert_tokens_to_ids(self, token):
+            return -1
+
+    assert _stop_token_ids(_NoImEnd()) == [248046]  # eos still there, the -1 dropped
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_generation_passes_the_stop_token_to_generate(batched):
+    """Without this, generation runs to max_new_tokens past the caption's <|im_end|> and the model
+    hallucinates a second user/assistant turn into the caption — Qwen3_5Config has no
+    eos_token_id to fall back on. This corrupted 73% of a v7 run."""
+    model, encoders, out_dims, max_tokens = _make_model_and_encoders()
+    tokenizer = _StopTokenTokenizer()
+    if batched:
+        generate_captions_batched(
+            model, tokenizer, encoders, out_dims, max_tokens, _PROMPT_CFG, "cpu",
+            raw_inputs_list=_raw(2), max_new_tokens=3,
+        )
+    else:
+        generate_caption(
+            model, tokenizer, encoders, out_dims, max_tokens, _PROMPT_CFG, "cpu",
+            raw_inputs={"image": {"pixel_values": torch.zeros(1, 1, 4, 4)}}, max_new_tokens=3,
+        )
+    assert model.llm.eos_token_id_passed is not None
+    assert 248046 in model.llm.eos_token_id_passed
