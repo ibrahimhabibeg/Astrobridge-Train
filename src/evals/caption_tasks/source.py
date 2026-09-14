@@ -20,11 +20,11 @@ class CategoricalCaptionTask(CaptionEvalTask):
         self.name = name
         self.target_column = target_column
         self.active_classes = active_classes
-        self.categories = list(self.active_classes.values())
+        self.categories = list(dict.fromkeys(self.active_classes.values()))
         self._options_text = ", ".join(self.categories)
 
-    def build_frontier_prompt(self, caption: str) -> str:
-        target_desc = "source class" if self.target_column == "class" else "source subclass"
+    def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
+        target_desc = "source class" if self.target_column in ("class", "source_class") else "source subclass"
         return (
             "You are an expert astrophysicist. You will be provided with a scientific description of an astronomical spectrum.\n"
             f"Based ONLY on the description of the spectrum, classify the astronomical {target_desc} into one of the following categories.\n\n"
@@ -55,12 +55,38 @@ class CategoricalCaptionTask(CaptionEvalTask):
         if isinstance(item, str):
             raw_class = item
         elif isinstance(item, (dict, pd.Series)):
-            raw_class = item[self.target_column]
+            gt_obj = item["ground_truth"] if "ground_truth" in item else item
+            raw_class = "UNKNOWN"
+            if isinstance(gt_obj, dict):
+                if self.target_column in gt_obj:
+                    raw_class = gt_obj[self.target_column]
+                elif "source_class" in gt_obj and self.target_column in ("class", "source_class"):
+                    raw_class = gt_obj["source_class"]
+                elif "subclass" in gt_obj and self.target_column in ("subclass", "source_subclass"):
+                    raw_class = gt_obj["subclass"]
+                elif "class" in gt_obj:
+                    raw_class = gt_obj["class"]
+
+            if raw_class == "UNKNOWN":
+                if self.target_column in item:
+                    raw_class = item[self.target_column]
+                elif "source_class" in item and self.target_column in ("class", "source_class"):
+                    raw_class = item["source_class"]
+                elif "subclass" in item and self.target_column in ("subclass", "source_subclass"):
+                    raw_class = item["subclass"]
         else:
             raise ValueError(f"Cannot extract ground truth from item of type {type(item)}")
 
         if raw_class in self.active_classes:
             return self.active_classes[raw_class]
+
+        for k, v in self.active_classes.items():
+            if k.lower() == str(raw_class).lower():
+                return v
+
+        for v in self.categories:
+            if v.lower() == str(raw_class).lower():
+                return v
 
         return "UNKNOWN"
 
@@ -71,4 +97,3 @@ class CategoricalCaptionTask(CaptionEvalTask):
             "active_classes": self.active_classes,
             "categories": self.categories,
         }
-

@@ -1,7 +1,8 @@
 name: caption_source
 batch_size: 32
 kwargs:
+  target_column: source_class
   active_classes:
     GALAXY: Galaxy
     QSO: Quasar
-
+    QUASAR: Quasar

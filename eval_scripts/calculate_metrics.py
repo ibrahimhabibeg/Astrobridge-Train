@@ -364,6 +364,54 @@ def compute_metrics_for_records(
             },
             "per_line": line_m,
         }
+
+        # Check for benchmark regimes
+        has_regimes = any("regime" in r or ("ground_truth" in r and isinstance(r["ground_truth"], dict) and "regime" in r["ground_truth"]) for r in records)
+        if has_regimes:
+            regime_records: Dict[str, List[Dict[str, Any]]] = {}
+            for r in records:
+                reg = r.get("regime")
+                if not reg and isinstance(r.get("ground_truth"), dict):
+                    reg = r["ground_truth"].get("regime")
+                if reg:
+                    regime_records.setdefault(str(reg), []).append(r)
+
+            regime_breakdown: Dict[str, Any] = {}
+            for reg, r_list in regime_records.items():
+                r_gt_sets = []
+                r_pred_sets = []
+                for r in r_list:
+                    gt_v, pred_v, _ = extract_record_data(r)
+                    if isinstance(gt_v, dict):
+                        r_gt_sets.append({k for k in gt_v.keys() if k != "regime"})
+                    elif isinstance(gt_v, (list, set)):
+                        r_gt_sets.append(set(gt_v))
+                    else:
+                        r_gt_sets.append(set())
+
+                    r_pred_sets.append(set(pred_v) if isinstance(pred_v, (list, set)) else set())
+
+                r_prf = sample_precision_recall_f1(r_gt_sets, r_pred_sets)
+                r_exact = exact_match_rate(r_gt_sets, r_pred_sets)
+
+                reg_data: Dict[str, Any] = {
+                    "num_samples": len(r_list),
+                    "exact_match_rate": r_exact,
+                    "precision": r_prf.get("mean_precision", 0.0),
+                    "recall": r_prf.get("mean_recall", 0.0),
+                    "f1": r_prf.get("mean_f1", 0.0),
+                    "jaccard": r_prf.get("mean_jaccard", 0.0),
+                }
+
+                if reg == "pure_negative":
+                    clean_neg = sum(1 for p in r_pred_sets if len(p) == 0)
+                    hallucinated = sum(1 for p in r_pred_sets if len(p) > 0)
+                    reg_data["clean_negative_rate"] = clean_neg / len(r_list) if r_list else 0.0
+                    reg_data["hallucination_rate"] = hallucinated / len(r_list) if r_list else 0.0
+
+                regime_breakdown[reg] = reg_data
+
+            task_metrics["regime_breakdown"] = regime_breakdown
     else:
         # Single-label classification
         y_true = []
@@ -483,10 +531,37 @@ def print_metrics_summary(
         aligns = [":---", ":---:", ":---:", ":---:", ":---:", ":---:"]
         print(format_markdown_table(headers, rows, aligns))
 
+        # Regime breakdown table
+        regime_breakdown = tm.get("regime_breakdown", {})
+        if regime_breakdown:
+            print("\n--- 2. Emission Line Regime Breakdown ---")
+            rb_headers = ["Regime", "Samples", "Clean Neg", "Hallucination", "Recall", "Precision", "F1", "Jaccard", "Exact Match"]
+            rb_rows = []
+            reg_order = ["pure_negative", "high_snr_positive", "partial_with_distractors", "low_snr_marginal"]
+            all_regs = sorted(list(regime_breakdown.keys()), key=lambda x: reg_order.index(x) if x in reg_order else 99)
+            for reg in all_regs:
+                stats = regime_breakdown[reg]
+                clean_str = f"{stats.get('clean_negative_rate', 0.0)*100:.1f}%" if "clean_negative_rate" in stats else "N/A"
+                halluc_str = f"{stats.get('hallucination_rate', 0.0)*100:.1f}%" if "hallucination_rate" in stats else "N/A"
+                rb_rows.append([
+                    f"**{reg}**",
+                    str(stats.get("num_samples", 0)),
+                    clean_str,
+                    halluc_str,
+                    f"{stats.get('recall', 0.0):.4f}",
+                    f"{stats.get('precision', 0.0):.4f}",
+                    f"{stats.get('f1', 0.0):.4f}",
+                    f"{stats.get('jaccard', 0.0):.4f}",
+                    f"{stats.get('exact_match_rate', 0.0)*100:.1f}%",
+                ])
+            rb_aligns = [":---"] + [":---:"] * (len(rb_headers) - 1)
+            print(format_markdown_table(rb_headers, rb_rows, rb_aligns))
+
         # Per-line table
         per_line = tm.get("per_line", {})
         if per_line:
-            print("\n--- 2. Per-Line Detection Statistics ---")
+            sec_num = "3" if regime_breakdown else "2"
+            print(f"\n--- {sec_num}. Per-Line Detection Statistics ---")
             p_headers = ["Line", "Support", "TP", "FP", "FN", "Precision", "Recall", "F1", "Mean SNR"]
             p_rows = []
             for line_name, s in per_line.items():
@@ -590,9 +665,36 @@ def generate_report_md(
         ]
         lines.append(format_markdown_table(headers, rows))
 
+        sec_idx = 2
+        regime_breakdown = tm.get("regime_breakdown", {})
+        if regime_breakdown:
+            lines.extend(["", f"## {sec_idx}. Emission Line Regime Breakdown", ""])
+            sec_idx += 1
+            rb_headers = ["Regime", "Samples", "Clean Neg", "Hallucination", "Recall", "Precision", "F1", "Jaccard", "Exact Match"]
+            rb_rows = []
+            reg_order = ["pure_negative", "high_snr_positive", "partial_with_distractors", "low_snr_marginal"]
+            all_regs = sorted(list(regime_breakdown.keys()), key=lambda x: reg_order.index(x) if x in reg_order else 99)
+            for reg in all_regs:
+                stats = regime_breakdown[reg]
+                clean_str = f"{stats.get('clean_negative_rate', 0.0)*100:.1f}%" if "clean_negative_rate" in stats else "N/A"
+                halluc_str = f"{stats.get('hallucination_rate', 0.0)*100:.1f}%" if "hallucination_rate" in stats else "N/A"
+                rb_rows.append([
+                    f"**{reg}**",
+                    str(stats.get("num_samples", 0)),
+                    clean_str,
+                    halluc_str,
+                    f"{stats.get('recall', 0.0):.4f}",
+                    f"{stats.get('precision', 0.0):.4f}",
+                    f"{stats.get('f1', 0.0):.4f}",
+                    f"{stats.get('jaccard', 0.0):.4f}",
+                    f"{stats.get('exact_match_rate', 0.0)*100:.1f}%",
+                ])
+            lines.append(format_markdown_table(rb_headers, rb_rows))
+
         per_line = tm.get("per_line", {})
         if per_line:
-            lines.extend(["", "## 2. Per-Line Detection Statistics", ""])
+            lines.extend(["", f"## {sec_idx}. Per-Line Detection Statistics", ""])
+            sec_idx += 1
             p_headers = ["Line", "Support", "TP", "FP", "FN", "Precision", "Recall", "F1", "Mean SNR"]
             p_rows = []
             for line_name, s in per_line.items():
@@ -621,9 +723,11 @@ def generate_report_md(
             rows.append(["**Ordinal MAE**", f"{tm.get('ordinal_mae', 0.0):.4f}"])
         lines.append(format_markdown_table(headers, rows))
 
+        sec_idx = 2
         cm = tm.get("confusion_matrix")
         if isinstance(cm, dict) and cm:
-            lines.extend(["", "## 2. Confusion Matrix", ""])
+            lines.extend(["", f"## {sec_idx}. Confusion Matrix", ""])
+            sec_idx += 1
             labels = list(cm.keys())
             cm_headers = ["True \\ Pred"] + labels
             cm_rows = []
@@ -634,7 +738,7 @@ def generate_report_md(
     if diag:
         lines.extend([
             "",
-            "## 3. Caption Quality Diagnostics",
+            f"## {sec_idx}. Caption Quality Diagnostics",
             "",
             format_markdown_table(
                 ["Diagnostic Indicator", "Value"],
@@ -646,14 +750,15 @@ def generate_report_md(
                 ]
             ),
         ])
+        sec_idx += 1
 
-    # 4. Spotlights / Qualitative Examples
+    # Spotlights / Qualitative Examples
     if records:
         successes = [r for r in records if r.get("frontier_evaluation", {}).get("is_correct", False)]
         failures = [r for r in records if not r.get("frontier_evaluation", {}).get("is_correct", False)]
 
         if successes or failures:
-            lines.extend(["", "## 4. Qualitative Spotlights", ""])
+            lines.extend(["", f"## {sec_idx}. Qualitative Spotlights", ""])
 
             if successes:
                 lines.append("### Top Success Examples")

@@ -7,6 +7,12 @@ import pandas as pd
 from ..buckets import BucketScheme, get_bucket_scheme
 from .base import CaptionEvalTask
 
+BIN_TO_LABEL = {
+    "<0.1": "A",
+    "0.1-0.5": "B",
+    ">0.5": "C",
+}
+
 
 class CaptionDistanceTask(CaptionEvalTask):
     """Evaluates the model's ability to describe distance/redshift features in spectra."""
@@ -18,7 +24,7 @@ class CaptionDistanceTask(CaptionEvalTask):
         else:
             self.scheme = scheme
 
-    def build_frontier_prompt(self, caption: str) -> str:
+    def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
         options = self.scheme.format_options()
         return (
             "You are an expert astrophysicist. You will be provided with a scientific description of an astronomical spectrum.\n"
@@ -47,10 +53,25 @@ class CaptionDistanceTask(CaptionEvalTask):
     def extract_ground_truth(self, item: Any) -> str:
         if isinstance(item, (int, float)):
             return self.scheme.classify(float(item))
-        elif isinstance(item, (dict, pd.Series)):
-            z = item["Z"]
-            return self.scheme.classify(float(z))
-        raise ValueError(f"Cannot extract ground truth Z from item of type {type(item)}")
+
+        if isinstance(item, (dict, pd.Series)):
+            gt_obj = item["ground_truth"] if "ground_truth" in item else item
+            if isinstance(gt_obj, dict):
+                if "redshift_bin" in gt_obj and str(gt_obj["redshift_bin"]) in BIN_TO_LABEL:
+                    return BIN_TO_LABEL[str(gt_obj["redshift_bin"])]
+                if "z" in gt_obj:
+                    return self.scheme.classify(float(gt_obj["z"]))
+                if "Z" in gt_obj:
+                    return self.scheme.classify(float(gt_obj["Z"]))
+
+            if "redshift_bin" in item and str(item["redshift_bin"]) in BIN_TO_LABEL:
+                return BIN_TO_LABEL[str(item["redshift_bin"])]
+            if "z" in item:
+                return self.scheme.classify(float(item["z"]))
+            if "Z" in item:
+                return self.scheme.classify(float(item["Z"]))
+
+        raise ValueError(f"Cannot extract ground truth Z from item of type {type(item)}: {item}")
 
     def get_config(self) -> Dict[str, Any]:
         return {

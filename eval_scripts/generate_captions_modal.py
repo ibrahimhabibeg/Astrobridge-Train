@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Generate and cache captions for astronomical spectra using Modal GPU.
+"""Generate and cache captions for astronomical spectra using Modal GPU across benchmarks.
 
 Usage:
     modal run eval_scripts/generate_captions_modal.py \
@@ -11,7 +11,7 @@ Options:
     --gpu A100-80GB         # Override GPU type (e.g. A100-80GB, A10G)
     --batch-size 32         # Batch size for generation
     --caption-prompt "..."  # Override captioning prompt
-    --dataset-filter all    # all | emission_lines | source | subclass
+    --benchmark all         # all | emission_lines | redshift | source_class | subclass
 """
 
 import argparse
@@ -29,10 +29,10 @@ app = modal.App("astrobridge-caption-generation")
 
 
 def download_models():
-    """Pre-bake required models and datasets into the Modal image cache."""
+    """Pre-bake required models and benchmark datasets into the Modal image cache."""
     from huggingface_hub import hf_hub_download, snapshot_download
 
-    astrobridge_id = "UniverseTBD/astrobridge-model-v5"
+    astrobridge_id = "UniverseTBD/astrobridge-model-v7"
     base_llm_id = "Qwen/Qwen3.5-9B"
 
     print(f"Downloading AstroBridge weights: {astrobridge_id}")
@@ -45,33 +45,14 @@ def download_models():
     print(f"Downloading Base LLM: {base_llm_id}")
     snapshot_download(base_llm_id)
 
-    DATASET_CACHE_VERSION = "2026-09-11-v2-400samples"
-    DATASET_CACHE_VERSION = "2026-09-12-v3-dual-splits"
-    print(f"Downloading evaluation datasets (version {DATASET_CACHE_VERSION})...")
-    hf_hub_download(
-        repo_id="UniverseTBD/AstroBridge-Data",
-        filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
-        repo_type="dataset",
-        force_download=True,
-    )
-    hf_hub_download(
-        repo_id="UniverseTBD/AstroBridge-Data",
-        filename="observations/spectra/desi_sdss_subset_crossmatch_nolan_1.0arcsec.parquet",
-        repo_type="dataset",
-        force_download=True,
-    )
-    hf_hub_download(
-        repo_id="UniverseTBD/AstroBridge-Data",
-        filename="observations/spectra/extracted_emission_lines.csv",
-        repo_type="dataset",
-        force_download=True,
-    )
-    hf_hub_download(
-        repo_id="UniverseTBD/AstroBridge-Data",
-        filename="observations/spectra/extracted_types.csv",
-        repo_type="dataset",
-        force_download=True,
-    )
+    print("Downloading benchmark evaluation datasets...")
+    for bench_file in ["redshift.parquet", "source_class.parquet", "subclass.parquet", "emission_lines.parquet"]:
+        hf_hub_download(
+            repo_id="UniverseTBD/AstroBridge-Data",
+            filename=f"captions/spectra/benchmarks/{bench_file}",
+            repo_type="dataset",
+            force_download=True,
+        )
 
 
 image = (
@@ -92,11 +73,11 @@ image = (
 def generate_captions_remote(
     responder_config: dict,
     timestamp_dir: str,
-    dataset_filter: str = "all",
-    split: str = "legacy",
+    benchmark: str = "all",
     limit: int = None,
     batch_size: int = 32,
     caption_prompt: str = None,
+    split: str = None,
 ):
     """Remote function executing GPU caption generation on Modal."""
     import sys
@@ -109,37 +90,27 @@ def generate_captions_remote(
 
     from evals.caption_responders import CaptionSample, get_caption_responder
     from evals.data import (
-        load_test_spectra,
-        load_test_spectra_by_category,
-        load_test_spectra_emission_lines,
+        load_all_benchmark_spectra,
+        load_benchmark_dataset,
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[Modal Remote] Initializing {responder_config.get('responder_type')} on {device}...")
     responder = get_caption_responder(responder_config, device)
 
-    print(f"[Modal Remote] Loading dataset filter '{dataset_filter}'...")
-    print(f"[Modal Remote] Loading dataset filter '{dataset_filter}' (split='{split}')...")
-    if dataset_filter == "emission_lines":
-        df_test = load_test_spectra_emission_lines()
-        df_test = load_test_spectra_emission_lines(split_version=split)
-    elif dataset_filter == "source":
-        df_test = load_test_spectra_by_category("class", ["GALAXY", "QSO"])
-        df_test = load_test_spectra_by_category("class", ["GALAXY", "QSO"], split_version=split)
-    elif dataset_filter == "subclass":
-        df_test = load_test_spectra_by_category("subclass", ["AGN", "STARBURST", "STARFORMING", "BROADLINE"])
-        df_test = load_test_spectra_by_category("subclass", ["AGN", "STARBURST", "STARFORMING", "BROADLINE"], split_version=split)
+    bench = benchmark or "all"
+    print(f"[Modal Remote] Loading benchmark data for target '{bench}'...")
+    if bench == "all":
+        df_test = load_all_benchmark_spectra()
     else:
-        df_test = load_test_spectra()
-        df_test = load_test_spectra(split_version=split)
+        df_test = load_benchmark_dataset(bench)
 
     if limit is not None:
         print(f"[Modal Remote] Limiting to first {limit} samples.")
         df_test = df_test.head(limit)
 
     total_expected = len(df_test)
-    print(f"[Modal Remote] Starting caption generation for {total_expected} spectra (dataset_filter='{dataset_filter}')...")
-    print(f"[Modal Remote] Starting caption generation for {total_expected} spectra (dataset_filter='{dataset_filter}', split='{split}')...")
+    print(f"[Modal Remote] Starting caption generation for {total_expected} benchmark spectra...")
 
     out_dir = os.path.join("/outputs", timestamp_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -166,7 +137,7 @@ def generate_captions_remote(
                 ivar = np.array(spec_data["ivar"]) if "ivar" in spec_data else None
                 samples.append(
                     CaptionSample(
-                        sample_id=str(row["wiki_entity_id"]),
+                        sample_id=str(row["sample_id"]),
                         wavelength=wavelength,
                         flux=flux,
                         mask=mask,
@@ -178,7 +149,8 @@ def generate_captions_remote(
             captions = responder.generate_captions(samples, prompt_override=caption_prompt)
             for c in captions:
                 record = {
-                    "wiki_entity_id": c.sample_id,
+                    "sample_id": c.sample_id,
+                    "object_id": c.sample_id,
                     "survey": c.survey,
                     "caption": c.caption,
                     "responder_type": c.responder_type,
@@ -201,12 +173,13 @@ def generate_captions_remote(
 def main(
     responder: str,
     output: str = None,
-    dataset_filter: str = "all",
-    split: str = "legacy",
+    benchmark: str = "all",
+    dataset_filter: str = None,
     limit: int = None,
     batch_size: int = None,
     caption_prompt: str = None,
     gpu: str = None,
+    split: str = None,
 ):
     with open(responder, "r") as f:
         responder_config = yaml.safe_load(f)
@@ -220,22 +193,21 @@ def main(
     if caption_prompt:
         responder_config["caption_prompt"] = caption_prompt
 
+    target_bench = dataset_filter or benchmark or "all"
     resp_tag = responder_config.get("responder_type", "model")
-    timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_captions")
-    timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{split}_captions")
+    timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{target_bench}_captions")
 
     gpu_type = gpu or responder_config.get("gpu", "A100-80GB")
-    print(f"Launching remote caption generation on Modal GPU ({gpu_type}) with batch size {effective_batch_size}...")
-    print(f"Launching remote caption generation on Modal GPU ({gpu_type}) with batch size {effective_batch_size} (split={split})...")
+    print(f"Launching remote caption generation on Modal GPU ({gpu_type}) for benchmark '{target_bench}' with batch size {effective_batch_size}...")
 
     generate_captions_remote.with_options(gpu=gpu_type).remote(
         responder_config=responder_config,
         timestamp_dir=timestamp_dir,
-        dataset_filter=dataset_filter,
-        split=split,
+        benchmark=target_bench,
         limit=limit,
         batch_size=effective_batch_size,
         caption_prompt=caption_prompt,
+        split=split,
     )
 
     # Sync output from Modal volume to local machine
@@ -271,7 +243,6 @@ def main(
     print(f"  uv run eval_scripts/run_caption_eval_local.py \\")
     print(f"      --task eval_configs/caption_tasks/distance.yaml \\")
     print(f"      --captions {final_output_path} \\")
-    print(f"      --split {split} \\")
     print(f"      --frontier eval_configs/frontier/gemini.yaml")
 
 
@@ -279,20 +250,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Modal script to generate captions.")
     parser.add_argument("--responder", type=str, required=True, help="Path to responder config.")
     parser.add_argument("--output", type=str, default=None, help="Local output path.")
-    parser.add_argument("--dataset-filter", type=str, default="all", help="Dataset filter.")
-    parser.add_argument("--split", type=str, default="legacy", choices=["legacy", "v7"], help="Dataset split: 'legacy' (default, 400 test) or 'v7' (641 val+test).")
+    parser.add_argument("--benchmark", type=str, default="all", help="Benchmark target (all, redshift, emission_lines, etc.).")
+    parser.add_argument("--dataset-filter", type=str, default=None, help="Alias for --benchmark.")
     parser.add_argument("--limit", type=int, default=None, help="Sample limit.")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size.")
     parser.add_argument("--caption-prompt", type=str, default=None, help="Prompt override.")
     parser.add_argument("--gpu", type=str, default=None, help="GPU type override.")
     args, _ = parser.parse_known_args()
 
+    bench = args.dataset_filter or args.benchmark
     print(
         f"Please run with Modal CLI:\n"
         f"  modal run eval_scripts/generate_captions_modal.py "
         f"--responder {args.responder} "
-        f"--split {args.split} "
+        f"--benchmark {bench} "
         + (f"--output {args.output} " if args.output else "")
         + (f"--limit {args.limit} " if args.limit else "")
     )
-

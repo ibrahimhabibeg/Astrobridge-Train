@@ -16,6 +16,10 @@ from evals.caption_tasks import (
     CaptionEmissionLineTask,
     CategoricalCaptionTask,
 )
+from evals.data import (
+    load_benchmark_dataset,
+    load_all_benchmark_spectra,
+)
 from evals.frontier import get_frontier_model
 from evals.caption_eval import compute_caption_metrics
 from eval_scripts.run_caption_eval_local import run_caption_evaluation
@@ -87,10 +91,10 @@ class TestCaptionEval(unittest.TestCase):
 
         # Emission line task test
         def parse_lines(text):
-            return ["Hα", "Hβ"] if "Hα" in text else []
+            return ["HALPHA", "HBETA"] if "Hα" in text or "HALPHA" in text else []
 
         resp_lines = model.predict("EMISSION LINES: candidate list...", parse_fn=parse_lines)
-        self.assertIn("Hα", resp_lines.parsed)
+        self.assertIn("HALPHA", resp_lines.parsed)
 
         # Fallback simulation
         fb_config = {"frontier_type": "mock", "mock_answer": "A", "simulate_fallback": True}
@@ -113,30 +117,56 @@ class TestCaptionEval(unittest.TestCase):
         parsed = task.default_parse("After thinking, here is the result.\nFINAL ANSWER: B")
         self.assertEqual(parsed, "B")
 
-        # Ground truth extraction
-        gt = task.extract_ground_truth({"Z": 0.05})
-        self.assertEqual(gt, "A")
-        gt_high = task.extract_ground_truth({"Z": 0.5})
-        self.assertEqual(gt_high, "C")
+        # Ground truth extraction with benchmark row schema
+        gt_row = {"ground_truth": {"z": 0.05, "redshift_bin": "<0.1"}}
+        self.assertEqual(task.extract_ground_truth(gt_row), "A")
+
+        gt_row_high = {"ground_truth": {"z": 1.2, "redshift_bin": ">0.5"}}
+        self.assertEqual(task.extract_ground_truth(gt_row_high), "C")
+
+        # Fallback legacy extraction
+        self.assertEqual(task.extract_ground_truth({"Z": 0.25}), "B")
 
     def test_caption_emission_line_task(self):
         task = get_caption_task("caption_emission_lines")
-        prompt = task.build_frontier_prompt("Strong Balmer lines with H-alpha and H-beta detected.")
+        candidates = ["HALPHA", "OIII_5007", "SII_6716"]
+
+        prompt = task.build_frontier_prompt(
+            "Strong Balmer lines with H-alpha and [O III] detected.",
+            item={"candidate_query_lines": candidates},
+        )
         self.assertIn("Allowed candidate lines:", prompt)
-        self.assertIn("Strong Balmer lines with H-alpha", prompt)
+        self.assertIn("HALPHA", prompt)
+        self.assertIn("OIII_5007", prompt)
         self.assertIn("EMISSION LINES: line1, line2, ...", prompt)
 
-        parsed = task.default_parse("The spectrum has features.\nEMISSION LINES: Hα, Hβ")
-        self.assertIn("Hα", parsed)
-        self.assertIn("Hβ", parsed)
+        # Parsing aliases and canonical mappings
+        parsed = task.default_parse("The spectrum has features.\nEMISSION LINES: Hα, [O III] 5007", candidate_lines=candidates)
+        self.assertIn("HALPHA", parsed)
+        self.assertIn("OIII_5007", parsed)
 
-        parsed_none = task.default_parse("EMISSION LINES: NONE")
+        parsed_none = task.default_parse("EMISSION LINES: NONE", candidate_lines=candidates)
         self.assertEqual(parsed_none, [])
+
+        # Ground truth extraction from benchmark format
+        row_gt = {
+            "ground_truth": {
+                "detected_lines": ["HALPHA", "OIII_5007"],
+                "absent_lines": ["SII_6716"],
+                "line_details": {
+                    "HALPHA": {"snr": 25.0, "detected": True},
+                    "OIII_5007": {"snr": 12.0, "detected": True},
+                    "SII_6716": {"snr": 0.5, "detected": False},
+                }
+            }
+        }
+        gt = task.extract_ground_truth(row_gt)
+        self.assertEqual(gt, {"HALPHA": 25.0, "OIII_5007": 12.0})
 
     def test_caption_categorical_tasks(self):
         source_task = get_caption_task(
             "caption_source",
-            active_classes={"GALAXY": "Galaxy", "QSO": "Quasar"},
+            active_classes={"GALAXY": "Galaxy", "QUASAR": "Quasar", "QSO": "Quasar"},
         )
         prompt = source_task.build_frontier_prompt("Broad emission lines and blue continuum.")
         self.assertIn("Galaxy, Quasar", prompt)
@@ -145,15 +175,29 @@ class TestCaptionEval(unittest.TestCase):
         parsed = source_task.default_parse("FINAL ANSWER: Quasar")
         self.assertEqual(parsed, "Quasar")
 
-        gt = source_task.extract_ground_truth({"class": "QSO"})
+        # Test benchmark ground truth extraction
+        gt = source_task.extract_ground_truth({"ground_truth": {"source_class": "QUASAR", "subclass": ""}})
         self.assertEqual(gt, "Quasar")
 
         subclass_task = get_caption_task(
             "caption_subclass",
-            active_classes={"AGN": "AGN", "STARBURST": "Starburst"},
+            active_classes={"AGN": "AGN", "STARBURST": "Starburst", "BROADLINE": "Broadline"},
         )
-        gt_sub = subclass_task.extract_ground_truth({"subclass": "AGN"})
-        self.assertEqual(gt_sub, "AGN")
+        gt_sub = subclass_task.extract_ground_truth({"ground_truth": {"subclass": "BROADLINE", "source_class": "QSO"}})
+        self.assertEqual(gt_sub, "Broadline")
+
+    def test_load_benchmark_datasets(self):
+        # Verify local benchmarks load properly
+        for name in ["redshift", "source_class", "subclass", "emission_lines"]:
+            df = load_benchmark_dataset(name)
+            self.assertGreater(len(df), 0)
+            self.assertIn("sample_id", df.columns)
+            self.assertIn("spectrum", df.columns)
+            self.assertIn("ground_truth", df.columns)
+
+        all_df = load_all_benchmark_spectra()
+        self.assertEqual(len(all_df), 717)
+        self.assertIn("sample_id", all_df.columns)
 
     def test_compute_caption_metrics_single_label(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -209,23 +253,25 @@ class TestCaptionEval(unittest.TestCase):
             records = [
                 {
                     "sample_id": "1",
-                    "ground_truth": {"Hα": 25.0, "Hβ": 10.0},
+                    "regime": "high_snr_positive",
+                    "ground_truth": {"HALPHA": 25.0, "HBETA": 10.0},
                     "caption": {"text": "A spectrum with strong Balmer emission."},
                     "frontier_evaluation": {
-                        "prediction": ["Hα", "Hβ"],
-                        "raw_response": "EMISSION LINES: Hα, Hβ",
+                        "prediction": ["HALPHA", "HBETA"],
+                        "raw_response": "EMISSION LINES: HALPHA, HBETA",
                         "is_correct": True,
                         "forced_fallback": False,
                     },
                 },
                 {
                     "sample_id": "2",
-                    "ground_truth": {"Hα": 15.0},
-                    "caption": {"text": "A faint continuum with weak features."},
+                    "regime": "pure_negative",
+                    "ground_truth": {},
+                    "caption": {"text": "A flat continuum without any detectable features."},
                     "frontier_evaluation": {
-                        "prediction": ["Hβ"],
-                        "raw_response": "EMISSION LINES: Hβ",
-                        "is_correct": False,
+                        "prediction": [],
+                        "raw_response": "EMISSION LINES: NONE",
+                        "is_correct": True,
                         "forced_fallback": False,
                     },
                 },
@@ -246,12 +292,11 @@ class TestCaptionEval(unittest.TestCase):
             self.assertIn("dataset_recall", metrics["task_metrics"])
             self.assertIn("dataset_f1", metrics["task_metrics"])
             self.assertIn("dataset_jaccard", metrics["task_metrics"])
-            self.assertIn("dataset_micro_level", metrics["task_metrics"])
-            self.assertIn("dataset_macro_f1", metrics["task_metrics"])
             self.assertIn("exact_match_rate", metrics["task_metrics"])
             self.assertIn("hamming_loss", metrics["task_metrics"])
-            self.assertIn("snr_weighted_f1", metrics["task_metrics"])
-            self.assertIn("per_line", metrics["task_metrics"])
+            self.assertIn("regime_breakdown", metrics["task_metrics"])
+            self.assertIn("pure_negative", metrics["task_metrics"]["regime_breakdown"])
+            self.assertEqual(metrics["task_metrics"]["regime_breakdown"]["pure_negative"]["clean_negative_rate"], 1.0)
 
             report_path = os.path.join(tmpdir, "report.md")
             self.assertTrue(os.path.exists(report_path))
@@ -259,17 +304,15 @@ class TestCaptionEval(unittest.TestCase):
                 content = rf.read()
                 self.assertIn("# Evaluation Report: caption_emission_lines", content)
                 self.assertIn("Sample-Mean Jaccard (IoU)", content)
-                self.assertIn("Dataset-Level (Micro) Jaccard", content)
-                self.assertIn("Hamming Loss", content)
-                self.assertIn("Dataset-Level (Micro) Precision", content)
-                self.assertIn("Per-Line Detection Statistics", content)
+                self.assertIn("Emission Line Regime Breakdown", content)
 
     def test_run_caption_evaluation_pipeline(self):
         synthetic_df = pd.DataFrame([
             {
-                "wiki_entity_id": f"id_{i}",
+                "object_id": f"id_{i}",
+                "sample_id": f"id_{i}",
                 "survey": "sdss",
-                "Z": 0.05 * (i + 1),
+                "ground_truth": {"z": 0.05 * (i + 1), "redshift_bin": "<0.1"},
                 "spectrum": {
                     "flux": [1.0, 2.0, 1.5],
                     "lambda": [4000, 5000, 6000],
@@ -279,7 +322,7 @@ class TestCaptionEval(unittest.TestCase):
             for i in range(3)
         ])
 
-        with patch("eval_scripts.run_caption_eval_local.load_test_spectra", return_value=synthetic_df):
+        with patch("eval_scripts.run_caption_eval_local.load_benchmark_dataset", return_value=synthetic_df):
             with tempfile.TemporaryDirectory() as tmpdir:
                 task_config = {"name": "caption_distance", "kwargs": {"scheme": "3-group"}}
                 frontier_config = {"frontier_type": "mock", "mock_answer": "A"}
@@ -305,4 +348,3 @@ class TestCaptionEval(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

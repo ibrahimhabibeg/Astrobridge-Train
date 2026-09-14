@@ -12,10 +12,10 @@ TASK_REGISTRY = {
     "caption_distance": CaptionDistanceTask,
     "caption_emission_lines": CaptionEmissionLineTask,
     "caption_source": lambda **kw: CategoricalCaptionTask(
-        name="caption_source", target_column="class", **kw
+        name="caption_source", target_column=kw.pop("target_column", "source_class"), **kw
     ),
     "caption_subclass": lambda **kw: CategoricalCaptionTask(
-        name="caption_subclass", target_column="subclass", **kw
+        name="caption_subclass", target_column=kw.pop("target_column", "subclass"), **kw
     ),
 }
 
@@ -36,4 +36,3 @@ __all__ = [
     "CategoricalCaptionTask",
     "get_caption_task",
 ]
-

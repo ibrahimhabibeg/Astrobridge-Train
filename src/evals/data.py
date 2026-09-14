@@ -1,147 +1,146 @@
+from __future__ import annotations
+
 import functools
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 import pandas as pd
 from huggingface_hub import hf_hub_download
 
 _REPO_ID = "UniverseTBD/AstroBridge-Data"
-_SPECTRA_FILE = "observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet"
-_V7_SUBSET_SPECTRA_FILE = "observations/spectra/desi_sdss_subset_crossmatch_nolan_1.0arcsec.parquet"
-_EMISSION_LINES_FILE = "observations/spectra/extracted_emission_lines.csv"
-_TYPES_FILE = "observations/spectra/extracted_types.csv"
+_HF_BENCHMARK_DIR = "captions/spectra/benchmarks"
+
+BENCHMARK_FILES: Dict[str, str] = {
+    "redshift": "redshift.parquet",
+    "distance": "redshift.parquet",
+    "caption_distance": "redshift.parquet",
+    "source_class": "source_class.parquet",
+    "source": "source_class.parquet",
+    "caption_source": "source_class.parquet",
+    "subclass": "subclass.parquet",
+    "caption_subclass": "subclass.parquet",
+    "emission_lines": "emission_lines.parquet",
+    "emission": "emission_lines.parquet",
+    "caption_emission_lines": "emission_lines.parquet",
+}
 
 
-def _load_legacy_test_spectra() -> pd.DataFrame:
-    """Downloads the AstroBridge spectra parquet, filters to test split, deduplicates (400 samples)."""
-    print("Loading legacy dataset (desi_sdss_crossmatch_nolan_1.0arcsec.parquet)...")
-    parquet_path = hf_hub_download(
-        repo_id=_REPO_ID, filename=_SPECTRA_FILE, repo_type="dataset"
-    )
-    df = pd.read_parquet(parquet_path)
-
-    print("Filtering and deduplicating data...")
-    df_test = df[df["split"] == "test"]
-    df_test = df_test.drop_duplicates(subset=["wiki_entity_id"]).reset_index(drop=True)
-    print(f"Found {len(df_test)} unique legacy test samples.")
-    return df_test
-
-
-def _find_v7_splits_path() -> Path:
+def _find_local_benchmark_file(filename: str) -> Optional[Path]:
+    """Search common local paths for pre-downloaded benchmark files."""
     candidates = [
-        Path(__file__).parent / "splits" / "v7_splits.parquet",
-        Path(__file__).resolve().parent / "splits" / "v7_splits.parquet",
-        Path("src/evals/data/splits/v7_splits.parquet"),
-        Path("eval_results/v7_splits.parquet"),
-        Path("/root/src/evals/data/splits/v7_splits.parquet"),
+        Path("eval_results/benchmarks") / filename,
+        Path("benchmarks") / filename,
+        Path(__file__).resolve().parent.parent.parent / "eval_results" / "benchmarks" / filename,
+        Path(__file__).resolve().parent.parent.parent / "benchmarks" / filename,
     ]
     for p in candidates:
-        if p.exists():
+        if p.is_file():
             return p
-    raise FileNotFoundError(
-        f"Could not find v7_splits.parquet in any of: {[str(c) for c in candidates]}"
-    )
+    return None
 
 
-def _load_v7_test_spectra() -> pd.DataFrame:
-    """Loads clean v7 validation + test spectra (641 unique samples).
+@functools.lru_cache(maxsize=8)
+def load_benchmark_dataset(benchmark_name: str) -> pd.DataFrame:
+    """Load a benchmark dataset with spectra and ground truth.
 
-    Uses the v7 stratified split policy and reads raw spectra from
-    desi_sdss_subset_crossmatch_nolan_1.0arcsec.parquet, matching
-    the exact training pipeline canonical object loader.
-    """
-    splits_path = _find_v7_splits_path()
-    print(f"Loading v7 manifest splits from {splits_path}...")
-    v7_manifest = pd.read_parquet(splits_path)
-
-    # Use both validation and test data
-    val_test_mask = v7_manifest["split"].isin(["val", "test"]) & v7_manifest["has_spectra"]
-    v7_val_test = v7_manifest[val_test_mask]
-    target_object_ids = set(v7_val_test["object_id"].astype(str))
-
-    from captioner.data.spectra_dataset import load_spectra_table
-    print(f"Loading v7 spectra from {_V7_SUBSET_SPECTRA_FILE}...")
-    spectra_df = load_spectra_table(
-        hf_path=_REPO_ID,
-        files=[_V7_SUBSET_SPECTRA_FILE],
-    )
-
-    df_matched = spectra_df[spectra_df["object_id"].astype(str).isin(target_object_ids)].copy()
-    df_matched = df_matched.drop_duplicates(subset=["wiki_entity_id"]).reset_index(drop=True)
-    print(f"Found {len(df_matched)} unique v7 (val + test) test samples.")
-    return df_matched
-
-
-@functools.lru_cache(maxsize=4)
-def load_test_spectra(split_version: Optional[str] = None) -> pd.DataFrame:
-    """Downloads or filters test spectra.
+    Checks local benchmark directory first, falling back to Hugging Face
+    dataset download if not found locally.
 
     Args:
-        split_version: 'legacy' (default, 400 samples from upstream test split)
-                       or 'v7' (641 unique val+test spectra from v7 stratified split).
-                       If None, falls back to env var ASTROBRIDGE_SPLIT or 'legacy'.
+        benchmark_name: Benchmark identifier (e.g. 'redshift', 'source_class',
+                        'subclass', 'emission_lines' or their task equivalents).
+
+    Returns:
+        pd.DataFrame containing spectra, object_id, sample_id, survey, and ground_truth.
     """
-    version = (split_version or os.environ.get("ASTROBRIDGE_SPLIT", "legacy")).lower().strip()
-    if version in ("v7", "v7_val_test", "v7-val-test"):
-        return _load_v7_test_spectra()
-    elif version in ("legacy", "upstream", "v5", "v6"):
-        return _load_legacy_test_spectra()
+    key = benchmark_name.strip().lower()
+    if key not in BENCHMARK_FILES:
+        valid_keys = sorted(set(BENCHMARK_FILES.keys()))
+        raise ValueError(f"Unknown benchmark '{benchmark_name}'. Valid benchmarks: {valid_keys}")
+
+    filename = BENCHMARK_FILES[key]
+    local_path = _find_local_benchmark_file(filename)
+
+    if local_path is not None:
+        print(f"Loading benchmark '{key}' from local file: {local_path}")
+        df = pd.read_parquet(local_path)
     else:
-        raise ValueError(
-            f"Unknown split_version '{version}'. Expected 'legacy' or 'v7'."
+        hf_subpath = f"{_HF_BENCHMARK_DIR}/{filename}"
+        print(f"Downloading benchmark '{key}' from HF {_REPO_ID}:{hf_subpath}...")
+        downloaded_path = hf_hub_download(
+            repo_id=_REPO_ID,
+            filename=hf_subpath,
+            repo_type="dataset",
         )
+        df = pd.read_parquet(downloaded_path)
 
+    # Standardize identifier columns
+    if "object_id" in df.columns:
+        df["sample_id"] = df["object_id"].astype(str)
+        if "wiki_entity_id" not in df.columns:
+            df["wiki_entity_id"] = df["sample_id"]
+    elif "wiki_entity_id" in df.columns:
+        df["sample_id"] = df["wiki_entity_id"].astype(str)
+        if "object_id" not in df.columns:
+            df["object_id"] = df["sample_id"]
 
-def load_emission_line_ground_truth() -> pd.DataFrame:
-    """Downloads the emission lines ground truth CSV."""
-    print("Loading emission lines ground truth...")
-    csv_path = hf_hub_download(
-        repo_id=_REPO_ID, filename=_EMISSION_LINES_FILE, repo_type="dataset"
-    )
-    return pd.read_csv(csv_path)
-
-
-def load_test_spectra_emission_lines(split_version: Optional[str] = None) -> pd.DataFrame:
-    """Test spectra filtered to those with emission line annotations."""
-    df_spectra = load_test_spectra(split_version=split_version)
-    df_lines = load_emission_line_ground_truth()
-    valid_ids = set(df_lines["wiki_entity_id"])
-    df_test_lines = df_spectra[df_spectra["wiki_entity_id"].isin(valid_ids)].reset_index(drop=True)
-    print(f"Found {len(df_test_lines)} test spectra matching emission line ground truth.")
-    return df_test_lines
+    print(f"Loaded benchmark '{key}': {len(df)} samples.")
+    return df
 
 
 @functools.lru_cache(maxsize=1)
-def _load_types_ground_truth() -> pd.DataFrame:
-    """Downloads the source/subclass types ground truth CSV."""
-    print("Loading source classification ground truth...")
-    csv_path = hf_hub_download(
-        repo_id=_REPO_ID, filename=_TYPES_FILE, repo_type="dataset"
-    )
-    return pd.read_csv(csv_path)
+def load_all_benchmark_spectra() -> pd.DataFrame:
+    """Load and deduplicate spectra across all 4 benchmark datasets.
+
+    Provides the 717 unique spectra evaluated across the benchmark suite,
+    ideal for pre-generating cached captions.
+
+    Returns:
+        pd.DataFrame containing unique spectra deduplicated by object_id.
+    """
+    benchmarks = ["redshift", "source_class", "subclass", "emission_lines"]
+    dfs: List[pd.DataFrame] = []
+
+    for name in benchmarks:
+        df = load_benchmark_dataset(name)
+        # Keep essential spectrum columns
+        common_cols = [c for c in ["sample_id", "object_id", "wiki_entity_id", "survey", "spectrum"] if c in df.columns]
+        dfs.append(df[common_cols].copy())
+
+    combined = pd.concat(dfs, ignore_index=True)
+    dedup = combined.drop_duplicates(subset=["object_id"]).reset_index(drop=True)
+    print(f"Loaded all benchmark spectra: {len(dedup)} unique spectra across {benchmarks}.")
+    return dedup
+
+
+def load_test_spectra(task_or_benchmark: Optional[str] = None, **kwargs) -> pd.DataFrame:
+    """Load test spectra for evaluation or caption generation.
+
+    If task_or_benchmark is specified, loads that dedicated benchmark dataset.
+    Otherwise loads all unique benchmark spectra (717 samples).
+    """
+    if task_or_benchmark and task_or_benchmark.lower() in BENCHMARK_FILES:
+        return load_benchmark_dataset(task_or_benchmark)
+    return load_all_benchmark_spectra()
+
+
+def load_emission_line_ground_truth() -> pd.DataFrame:
+    """Load emission line benchmark ground truth."""
+    return load_benchmark_dataset("emission_lines")
+
+
+def load_test_spectra_emission_lines(**kwargs) -> pd.DataFrame:
+    """Load emission line benchmark dataset (200 samples with query lines)."""
+    return load_benchmark_dataset("emission_lines")
 
 
 def load_test_spectra_by_category(
     target_column: str,
-    active_keys: list[str],
-    split_version: Optional[str] = None,
+    active_keys: Optional[List[str]] = None,
+    **kwargs,
 ) -> pd.DataFrame:
-    """Test spectra filtered and merged by a categorical column (class or subclass).
-
-    Args:
-        target_column: Column name in the types CSV to filter on ('class' or 'subclass').
-        active_keys: List of values in target_column to keep.
-        split_version: 'legacy' (default) or 'v7'.
-    """
-    df_spectra = load_test_spectra(split_version=split_version)
-    df_types = _load_types_ground_truth()
-
-    df_types = df_types[df_types[target_column].isin(active_keys)]
-
-    df_merged = df_spectra.merge(
-        df_types[["wiki_entity_id", target_column]],
-        on="wiki_entity_id",
-        how="inner",
-    ).reset_index(drop=True)
-    print(f"Found {len(df_merged)} test spectra matching active {target_column} values.")
-    return df_merged
+    """Load source class or subclass benchmark dataset."""
+    col = target_column.lower().strip()
+    if "subclass" in col:
+        return load_benchmark_dataset("subclass")
+    return load_benchmark_dataset("source_class")

@@ -78,8 +78,10 @@ def compute_caption_metrics(results_dir: str, task: Any) -> Dict[str, Any]:
         for r in records:
             gt_val = r.get("ground_truth", {})
             if isinstance(gt_val, dict):
-                gt_sets.append(set(gt_val.keys()))
-                gt_dicts.append(gt_val)
+                # Exclude non-line metadata keys like 'regime'
+                clean_gt = {k: v for k, v in gt_val.items() if k != "regime"}
+                gt_sets.append(set(clean_gt.keys()))
+                gt_dicts.append(clean_gt)
             elif isinstance(gt_val, (list, set)):
                 gt_sets.append(set(gt_val))
                 gt_dicts.append({k: 1.0 for k in gt_val})
@@ -123,7 +125,7 @@ def compute_caption_metrics(results_dir: str, task: Any) -> Dict[str, Any]:
             "dataset_macro_f1": macro_f1_val,
             "exact_match_rate": exact,
             "hamming_loss": h_loss,
-            # Structured groupings matching classic eval suite
+            # Structured groupings
             "sample_level": {
                 **prf,
                 "mean_snr_weighted_recall": snr_m.get("mean_snr_weighted_recall", 0.0),
@@ -138,6 +140,56 @@ def compute_caption_metrics(results_dir: str, task: Any) -> Dict[str, Any]:
             },
             "per_line": line_m,
         }
+
+        # Check for benchmark regimes
+        has_regimes = any("regime" in r or ("ground_truth" in r and isinstance(r["ground_truth"], dict) and "regime" in r["ground_truth"]) for r in records)
+        if has_regimes:
+            regime_records: Dict[str, List[Dict[str, Any]]] = {}
+            for r in records:
+                reg = r.get("regime")
+                if not reg and isinstance(r.get("ground_truth"), dict):
+                    reg = r["ground_truth"].get("regime")
+                if reg:
+                    regime_records.setdefault(str(reg), []).append(r)
+
+            regime_breakdown: Dict[str, Any] = {}
+            for reg, r_list in regime_records.items():
+                r_gt_sets = []
+                r_pred_sets = []
+                for r in r_list:
+                    gt_v = r.get("ground_truth", {})
+                    if isinstance(gt_v, dict):
+                        r_gt_sets.append({k for k in gt_v.keys() if k != "regime"})
+                    elif isinstance(gt_v, (list, set)):
+                        r_gt_sets.append(set(gt_v))
+                    else:
+                        r_gt_sets.append(set())
+
+                    p_v = r.get("frontier_evaluation", {}).get("prediction", [])
+                    r_pred_sets.append(set(p_v) if isinstance(p_v, (list, set)) else set())
+
+                r_prf = sample_precision_recall_f1(r_gt_sets, r_pred_sets)
+                r_exact = exact_match_rate(r_gt_sets, r_pred_sets)
+
+                reg_data: Dict[str, Any] = {
+                    "num_samples": len(r_list),
+                    "exact_match_rate": r_exact,
+                    "precision": r_prf.get("mean_precision", 0.0),
+                    "recall": r_prf.get("mean_recall", 0.0),
+                    "f1": r_prf.get("mean_f1", 0.0),
+                    "jaccard": r_prf.get("mean_jaccard", 0.0),
+                }
+
+                if reg == "pure_negative":
+                    clean_neg = sum(1 for p in r_pred_sets if len(p) == 0)
+                    hallucinated = sum(1 for p in r_pred_sets if len(p) > 0)
+                    reg_data["clean_negative_rate"] = clean_neg / len(r_list) if r_list else 0.0
+                    reg_data["hallucination_rate"] = hallucinated / len(r_list) if r_list else 0.0
+
+                regime_breakdown[reg] = reg_data
+
+            task_metrics["regime_breakdown"] = regime_breakdown
+
     else:
         # Single-label classification
         y_true = [str(r.get("ground_truth", "UNKNOWN")) for r in records]
@@ -250,6 +302,28 @@ def _generate_markdown_report(
         f"| **Frontier Fallback Retry Rate** | {diag.get('frontier_fallback_rate', 0) * 100:.1f}% |",
     ])
 
+    # Regime breakdown if present
+    if is_multilabel and "regime_breakdown" in tm:
+        rb = tm["regime_breakdown"]
+        lines.extend([
+            "",
+            "## 3. Emission Line Regime Breakdown",
+            "",
+            "| Regime | Samples | Clean Negative | Hallucination | Recall | Precision | F1 | Jaccard | Exact Match |",
+            "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+        ])
+        reg_order = ["pure_negative", "high_snr_positive", "partial_with_distractors", "low_snr_marginal"]
+        all_regs = sorted(list(rb.keys()), key=lambda x: reg_order.index(x) if x in reg_order else 99)
+        for reg in all_regs:
+            stats = rb[reg]
+            clean_str = f"{stats.get('clean_negative_rate', 0.0)*100:.1f}%" if "clean_negative_rate" in stats else "N/A"
+            halluc_str = f"{stats.get('hallucination_rate', 0.0)*100:.1f}%" if "hallucination_rate" in stats else "N/A"
+            lines.append(
+                f"| **{reg}** | {stats.get('num_samples', 0)} | {clean_str} | {halluc_str} | "
+                f"{stats.get('recall', 0):.3f} | {stats.get('precision', 0):.3f} | {stats.get('f1', 0):.3f} | "
+                f"{stats.get('jaccard', 0):.3f} | {stats.get('exact_match_rate', 0)*100:.1f}% |"
+            )
+
     # Confusion matrix or per-line table
     if not is_multilabel and "confusion_matrix" in tm:
         cm = tm["confusion_matrix"]
@@ -267,9 +341,10 @@ def _generate_markdown_report(
                 lines.append(row_str)
 
     elif is_multilabel and "per_line" in tm:
+        section_num = "4" if "regime_breakdown" in tm else "3"
         lines.extend([
             "",
-            "## 3. Per-Line Detection Statistics",
+            f"## {section_num}. Per-Line Detection Statistics",
             "",
             "| Emission Line | Precision | Recall | F1 | Support |",
             "| :--- | :---: | :---: | :---: | :---: |",
@@ -279,13 +354,14 @@ def _generate_markdown_report(
                 f"| {line_name} | {stats.get('precision', 0):.3f} | {stats.get('recall', 0):.3f} | {stats.get('f1', 0):.3f} | {stats.get('support', 0)} |"
             )
 
-    # 4. Spotlights / Case Studies
+    # Spotlights / Case Studies
     successes = [r for r in records if r.get("frontier_evaluation", {}).get("is_correct", False)]
     failures = [r for r in records if not r.get("frontier_evaluation", {}).get("is_correct", False)]
 
+    spotlight_num = "5" if (is_multilabel and "regime_breakdown" in tm) else "4"
     lines.extend([
         "",
-        "## 4. Qualitative Spotlights",
+        f"## {spotlight_num}. Qualitative Spotlights",
         "",
         "### Top Success Examples",
     ])

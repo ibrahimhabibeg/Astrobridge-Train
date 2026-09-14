@@ -7,7 +7,7 @@ class CaptionEvalTask(Protocol):
     """Protocol defining a caption evaluation task where a Frontier model predicts properties from a caption."""
     name: str
 
-    def build_frontier_prompt(self, caption: str) -> str:
+    def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
         """Construct the prompt sent to the Frontier VLM containing the caption and task instructions."""
         ...
 
@@ -26,4 +26,3 @@ class CaptionEvalTask(Protocol):
     def get_config(self) -> Dict[str, Any]:
         """Return serializable task metadata and configuration."""
         ...
-

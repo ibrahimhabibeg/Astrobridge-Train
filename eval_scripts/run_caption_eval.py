@@ -34,7 +34,7 @@ try:
     def download_models():
         from huggingface_hub import hf_hub_download, snapshot_download
 
-        astrobridge_id = "UniverseTBD/astrobridge-model-v5"
+        astrobridge_id = "UniverseTBD/astrobridge-model-v7"
         base_llm_id = "Qwen/Qwen3.5-9B"
 
         print(f"Downloading AstroBridge extra weights: {astrobridge_id}")
@@ -47,22 +47,13 @@ try:
         print(f"Downloading Base LLM: {base_llm_id}")
         snapshot_download(base_llm_id)
 
-        print("Downloading evaluation datasets...")
-        hf_hub_download(
-            repo_id="UniverseTBD/AstroBridge-Data",
-            filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
-            repo_type="dataset",
-        )
-        hf_hub_download(
-            repo_id="UniverseTBD/AstroBridge-Data",
-            filename="observations/spectra/extracted_emission_lines.csv",
-            repo_type="dataset",
-        )
-        hf_hub_download(
-            repo_id="UniverseTBD/AstroBridge-Data",
-            filename="observations/spectra/extracted_types.csv",
-            repo_type="dataset",
-        )
+        print("Downloading benchmark evaluation datasets...")
+        for bench_file in ["redshift.parquet", "source_class.parquet", "subclass.parquet", "emission_lines.parquet"]:
+            hf_hub_download(
+                repo_id="UniverseTBD/AstroBridge-Data",
+                filename=f"captions/spectra/benchmarks/{bench_file}",
+                repo_type="dataset",
+            )
 
     image = (
         modal.Image.debian_slim(python_version="3.10")
@@ -85,12 +76,12 @@ try:
 
         import torch
         from evals.caption_responders import CaptionSample, get_caption_responder
-        from evals.data import load_test_spectra
+        from evals.data import load_all_benchmark_spectra
         from tqdm import tqdm
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         responder = get_caption_responder(responder_config, device)
-        df_test = load_test_spectra()
+        df_test = load_all_benchmark_spectra()
 
         if limit is not None:
             df_test = df_test.head(limit)
@@ -120,7 +111,7 @@ try:
                     ivar = np.array(spec_data["ivar"]) if "ivar" in spec_data else None
                     samples.append(
                         CaptionSample(
-                            sample_id=str(row["wiki_entity_id"]),
+                            sample_id=str(row["sample_id"]),
                             wavelength=wavelength,
                             flux=flux,
                             mask=mask,
@@ -132,7 +123,8 @@ try:
                 captions = responder.generate_captions(samples, prompt_override=caption_prompt)
                 for c in captions:
                     record = {
-                        "wiki_entity_id": c.sample_id,
+                        "sample_id": c.sample_id,
+                        "object_id": c.sample_id,
                         "survey": c.survey,
                         "caption": c.caption,
                         "responder_type": c.responder_type,
@@ -235,4 +227,3 @@ if __name__ == "__main__":
         gemini_model=args.gemini_model,
         gpu=args.gpu,
     )
-
