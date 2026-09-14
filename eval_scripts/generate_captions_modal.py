@@ -160,7 +160,10 @@ def generate_captions_remote(
                 out_f.write(json.dumps(record) + "\n")
                 total += 1
 
+            out_f.flush()
             volume.commit()
+
+    volume.commit()
 
     if total != total_expected:
         print(f"[Modal Remote] WARNING: Generated {total} captions but expected {total_expected}!")
