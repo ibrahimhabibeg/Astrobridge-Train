@@ -28,7 +28,7 @@ class TestPromptTemplates(unittest.TestCase):
                 options="A: Galaxy\nB: Quasar",
                 caption="This is a test galaxy caption.",
             )
-            self.assertIn("astronomical source class", rendered)
+            self.assertIn("classify the astronomical source", rendered)
             self.assertIn("A: Galaxy\nB: Quasar", rendered)
             self.assertIn("FINAL ANSWER: [Letter]", rendered)
 
@@ -38,7 +38,7 @@ class TestPromptTemplates(unittest.TestCase):
             options="A: AGN\nB: Starburst\nC: Starforming",
             caption="This is a test subclass caption.",
         )
-        self.assertIn("astronomical source subclass", rendered)
+        self.assertIn("classify the astronomical source", rendered)
         self.assertIn("A: AGN\nB: Starburst\nC: Starforming", rendered)
         self.assertIn("FINAL ANSWER: [Letter]", rendered)
 

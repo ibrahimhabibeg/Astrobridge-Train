@@ -179,6 +179,16 @@ def test_mock_frontier():
     assert resp2.parsed == "A"
     assert resp2.forced_fallback == True
 
+    # Test predict_all
+    all_resps = judge.predict_all(
+        ["Prompt 1", "Prompt 2"],
+        parse_fn=lambda x: "B" if "B" in x else None,
+    )
+    assert len(all_resps) == 2
+    assert all_resps[0].parsed == "B"
+    assert all_resps[1].parsed == "B"
+
+
 
 def test_compute_caption_metrics_classification(tmp_path: Path):
     preds_file = tmp_path / "predictions.jsonl"

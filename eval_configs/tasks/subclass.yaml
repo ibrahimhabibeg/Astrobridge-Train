@@ -1,5 +1,4 @@
 name: subclass
-batch_size: 32
 kwargs:
   active_classes:
     AGN: AGN

@@ -97,7 +97,7 @@ class GeminiFrontierModel(FrontierModel):
             metadata={"model": self._model_name},
         )
 
-    def predict_batch(
+    def predict_all(
         self,
         prompts: List[str],
         parse_fn: Callable[[str], Any] | List[Callable[[str], Any]],
@@ -126,3 +126,4 @@ class GeminiFrontierModel(FrontierModel):
                 responses[idx] = resp
 
         return [r for r in responses if r is not None]
+

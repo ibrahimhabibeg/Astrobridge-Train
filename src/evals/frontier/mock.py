@@ -64,7 +64,7 @@ class MockFrontierModel(FrontierModel):
             metadata={"mock": True},
         )
 
-    def predict_batch(
+    def predict_all(
         self,
         prompts: List[str],
         parse_fn: Callable[[str], Any] | List[Callable[[str], Any]],
@@ -81,3 +81,4 @@ class MockFrontierModel(FrontierModel):
             )
             for i, p in enumerate(prompts)
         ]
+

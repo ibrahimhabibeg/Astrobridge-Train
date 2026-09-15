@@ -22,7 +22,7 @@ class FrontierModel(Protocol):
     ) -> FrontierResponse:
         ...
 
-    def predict_batch(
+    def predict_all(
         self,
         prompts: List[str],
         parse_fn: Callable[[str], Any] | List[Callable[[str], Any]],
