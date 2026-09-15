@@ -25,22 +25,22 @@ class TestPromptTemplates(unittest.TestCase):
         for tmpl in ["caption_eval/source.jinja2", "caption_eval/source_class.jinja2"]:
             rendered = render_prompt(
                 tmpl,
-                options="GALAXY, QSO",
+                options="A: Galaxy\nB: Quasar",
                 caption="This is a test galaxy caption.",
             )
             self.assertIn("astronomical source class", rendered)
-            self.assertIn("GALAXY, QSO", rendered)
-            self.assertIn("FINAL ANSWER: [Category]", rendered)
+            self.assertIn("A: Galaxy\nB: Quasar", rendered)
+            self.assertIn("FINAL ANSWER: [Letter]", rendered)
 
     def test_caption_eval_subclass_template(self):
         rendered = render_prompt(
             "caption_eval/subclass.jinja2",
-            options="STARFORMING, AGN, STARBURST",
+            options="A: AGN\nB: Starburst\nC: Starforming",
             caption="This is a test subclass caption.",
         )
         self.assertIn("astronomical source subclass", rendered)
-        self.assertIn("STARFORMING, AGN, STARBURST", rendered)
-        self.assertIn("FINAL ANSWER: [Category]", rendered)
+        self.assertIn("A: AGN\nB: Starburst\nC: Starforming", rendered)
+        self.assertIn("FINAL ANSWER: [Letter]", rendered)
 
     def test_caption_eval_emission_lines_template(self):
         rendered = render_prompt(
@@ -62,12 +62,14 @@ class TestPromptTemplates(unittest.TestCase):
 
         src_task = get_task("source")
         p2 = src_task.build_frontier_prompt("Caption for source")
-        self.assertIn("Galaxy, Quasar", p2)
+        self.assertIn("A: Galaxy", p2)
+        self.assertIn("B: Quasar", p2)
         self.assertIn("Caption for source", p2)
 
         sub_task = get_task("subclass")
         p3 = sub_task.build_frontier_prompt("Caption for subclass")
-        self.assertIn("AGN, Starburst, Starforming, Broadline", p3)
+        self.assertIn("A: AGN", p3)
+        self.assertIn("B: Starburst", p3)
         self.assertIn("Caption for subclass", p3)
 
         em_task = get_task("emission_lines")

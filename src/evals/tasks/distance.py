@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from ..prompts import render_prompt
-from .base import Task
+from .base import Task, parse_single_choice
 
 
 class DistanceTask(Task):
@@ -81,20 +81,17 @@ class DistanceTask(Task):
         return "\n\nFINAL ANSWER: "
 
     def default_parse(self, raw_text: str, **kwargs: Any) -> Optional[str]:
+        letter = parse_single_choice(
+            raw_text, allowed_letters=set(self.letters)
+        )
+        if letter:
+            return letter
         if not raw_text:
             return None
-        letters_str = "".join(self.letters)
-        match = re.search(
-            r"FINAL ANSWER:\s*([" + letters_str + r"])", raw_text, re.IGNORECASE
-        )
-        if match:
-            return match.group(1).upper()
-        match = re.search(
-            r"(?:answer is|category)\s*(?:is\s*)?[:\s]*([ " + letters_str + r"])",
-            raw_text,
-            re.IGNORECASE,
-        )
-        return match.group(1).upper() if match else None
+        for lbl, let in self.label_to_letter.items():
+            if re.search(r"\b" + re.escape(lbl) + r"\b", raw_text, re.IGNORECASE):
+                return let
+        return None
 
     def get_parse_fn(self, item: Optional[Dict[str, Any]] = None) -> Any:
         return self.default_parse

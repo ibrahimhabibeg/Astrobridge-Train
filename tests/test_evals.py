@@ -17,6 +17,8 @@ from src.evals.tasks import (
     SourceTask,
     SubclassTask,
     get_task,
+    parse_multi_choice,
+    parse_single_choice,
 )
 
 
@@ -76,11 +78,16 @@ def test_source_task():
     assert task.extract_ground_truth({"class": "QSO"}) == "Quasar"
 
     prompt = task.build_frontier_prompt("Caption: Luminous quasar with broad lines.")
-    assert "Galaxy, Quasar" in prompt
+    assert "A: Galaxy" in prompt
+    assert "B: Quasar" in prompt
+    assert "FINAL ANSWER: [Letter]" in prompt
 
-    assert task.default_parse("FINAL ANSWER: Galaxy") == "Galaxy"
+    assert task.default_parse("FINAL ANSWER: A") == "Galaxy"
+    assert task.default_parse("FINAL ANSWER: B") == "Quasar"
+    assert task.default_parse("Therefore, the answer is A.") == "Galaxy"
     assert task.default_parse("FINAL ANSWER: Quasar") == "Quasar"
     assert task.default_parse("This is clearly a QSO.") == "Quasar"
+    assert task.default_parse("Random text without matches") is None
 
 
 def test_subclass_task():
@@ -90,10 +97,17 @@ def test_subclass_task():
     assert task.extract_ground_truth({"subclass": "STARBURST"}) == "Starburst"
 
     prompt = task.build_frontier_prompt("Caption: Intense star-forming regions.")
-    assert "AGN, Starburst, Starforming" in prompt
+    assert "A: AGN" in prompt
+    assert "B: Starburst" in prompt
+    assert "C: Starforming" in prompt
+    assert "FINAL ANSWER: [Letter]" in prompt
 
+    assert task.default_parse("FINAL ANSWER: A") == "AGN"
+    assert task.default_parse("FINAL ANSWER: B") == "Starburst"
+    assert task.default_parse("The category is C") == "Starforming"
     assert task.default_parse("FINAL ANSWER: Starburst") == "Starburst"
     assert task.default_parse("Based on lines, this is an AGN.") == "AGN"
+    assert task.default_parse("Unrelated text") is None
 
 
 def test_emission_line_task():
@@ -256,3 +270,25 @@ def test_task_registry_resolution():
     assert isinstance(get_task("source"), SourceTask)
     assert isinstance(get_task("subclass"), SubclassTask)
     assert isinstance(get_task("emission_lines"), EmissionLineTask)
+
+
+def test_choice_parsers():
+    # Single choice
+    assert parse_single_choice("FINAL ANSWER: A", allowed_letters={"A", "B"}) == "A"
+    assert parse_single_choice("FINAL ANSWER: [B]", allowed_letters={"A", "B"}) == "B"
+    assert parse_single_choice("FINAL ANSWER: (A)", allowed_letters={"A", "B"}) == "A"
+    assert parse_single_choice("FINAL ANSWER: **B**", allowed_letters={"A", "B"}) == "B"
+    assert parse_single_choice("FINAL ANSWER: Option A", allowed_letters={"A", "B"}) == "A"
+    assert parse_single_choice("Therefore, the answer is B.", allowed_letters={"A", "B"}) == "B"
+    assert parse_single_choice("The category is A", allowed_letters={"A", "B"}) == "A"
+    assert parse_single_choice("FINAL ANSWER: C", allowed_letters={"A", "B"}) is None
+    assert parse_single_choice("Random text") is None
+
+    # Multi choice
+    assert parse_multi_choice("FINAL ANSWER: A, B", allowed_letters={"A", "B", "C"}) == ["A", "B"]
+    assert parse_multi_choice("FINAL ANSWER: [A, C]", allowed_letters={"A", "B", "C"}) == ["A", "C"]
+    assert parse_multi_choice("FINAL ANSWER: **A**, **B**", allowed_letters={"A", "B", "C"}) == ["A", "B"]
+    assert parse_multi_choice("FINAL ANSWER: A and B", allowed_letters={"A", "B", "C"}) == ["A", "B"]
+    assert parse_multi_choice("FINAL ANSWER: NONE", allowed_letters={"A", "B", "C"}) == []
+    assert parse_multi_choice("No lines present. FINAL ANSWER: NONE") == []
+    assert parse_multi_choice("Random text without choices", allowed_letters={"A", "B"}) == []

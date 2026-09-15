@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional
 import pandas as pd
 
 from ..prompts import render_prompt
-from .base import Task
+from .base import Task, parse_multi_choice
 
 CANONICAL_LINES: List[str] = [
     "HALPHA",
@@ -66,28 +66,10 @@ class EmissionLineTask(Task):
         allowed_letters = set(letter_to_line.keys())
 
         def parse(raw_text: str) -> List[str]:
-            if not raw_text:
-                return []
-            match = re.search(r"FINAL ANSWER:\s*(.*)", raw_text, re.IGNORECASE)
-            target = match.group(1).strip() if match else raw_text.strip()
-
-            if re.search(r"\bNONE\b", target, re.IGNORECASE):
-                other_letters = [
-                    ch
-                    for ch in re.findall(r"\b[A-Z]\b", target)
-                    if ch in allowed_letters
-                ]
-                if not other_letters:
-                    return []
-
-            letters = re.findall(r"\b[A-Z]\b", target)
-            seen = set()
-            extracted = []
-            for l in letters:
-                if l in letter_to_line and l not in seen:
-                    seen.add(l)
-                    extracted.append(letter_to_line[l])
-            return extracted
+            chosen_letters = parse_multi_choice(
+                raw_text, allowed_letters=allowed_letters
+            )
+            return [letter_to_line[l] for l in chosen_letters if l in letter_to_line]
 
         return parse
 
