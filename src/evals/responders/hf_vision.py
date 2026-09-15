@@ -18,13 +18,19 @@ from .utils import render_spectrum_plot, clean_and_extract_caption
 
 class HFVisionResponder(BaseResponder):
     def __init__(self, config: dict, device: str):
-        assert "hf_model_id" in config and config["hf_model_id"], "Missing 'hf_model_id' in config"
+        assert "hf_model_id" in config and config["hf_model_id"], (
+            "Missing 'hf_model_id' in config"
+        )
         self._model_id = config["hf_model_id"]
-        self.caption_prompt = resolve_caption_prompt(config, "caption_generation/vision_baseline.jinja2")
+        self.caption_prompt = resolve_caption_prompt(
+            config, "caption_generation/vision_baseline.jinja2"
+        )
         self._max_tokens = config.get("max_tokens", 256)
         self._device = device
 
-        self._processor = AutoProcessor.from_pretrained(self._model_id, trust_remote_code=True)
+        self._processor = AutoProcessor.from_pretrained(
+            self._model_id, trust_remote_code=True
+        )
         self._model = AutoModelForImageTextToText.from_pretrained(
             self._model_id,
             device_map="auto",
@@ -51,7 +57,9 @@ class HFVisionResponder(BaseResponder):
         messages_batch = []
         images = []
         for sample in samples:
-            png_bytes = render_spectrum_plot(sample.wavelength, sample.flux, mask=sample.mask)
+            png_bytes = render_spectrum_plot(
+                sample.wavelength, sample.flux, mask=sample.mask
+            )
             image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
             images.append(image)
 
@@ -75,7 +83,9 @@ class HFVisionResponder(BaseResponder):
         if self._processor.tokenizer.pad_token is None:
             self._processor.tokenizer.pad_token = self._processor.tokenizer.eos_token
 
-        inputs = self._processor(text=texts, images=images, return_tensors="pt", padding=True)
+        inputs = self._processor(
+            text=texts, images=images, return_tensors="pt", padding=True
+        )
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
         with torch.no_grad():
@@ -87,7 +97,9 @@ class HFVisionResponder(BaseResponder):
 
         input_len = inputs["input_ids"].shape[1]
         generated_ids = output_ids[:, input_len:]
-        raw_responses = self._processor.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        raw_responses = self._processor.tokenizer.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )
 
         captions = []
         for sample, raw in zip(samples, raw_responses):
@@ -104,6 +116,3 @@ class HFVisionResponder(BaseResponder):
                 )
             )
         return captions
-
-
-HFVisionCaptionResponder = HFVisionResponder

@@ -22,10 +22,14 @@ from captioner.utils.prompt import build_wrapper_text
 
 class AstroBridgeResponder(BaseResponder):
     def __init__(self, config: dict, device: str):
-        assert "astrobridge_id" in config and config["astrobridge_id"], "Missing 'astrobridge_id' in config"
+        assert "astrobridge_id" in config and config["astrobridge_id"], (
+            "Missing 'astrobridge_id' in config"
+        )
         self.device = device
         self.repo_id = config["astrobridge_id"]
-        self.caption_prompt = resolve_caption_prompt(config, "caption_generation/astrobridge.jinja2")
+        self.caption_prompt = resolve_caption_prompt(
+            config, "caption_generation/astrobridge.jinja2"
+        )
         self.cfg = load_config("base", "data", "modalities", "model", "stage2")
 
         llm, self.tokenizer = build_llm(self.cfg)
@@ -43,9 +47,13 @@ class AstroBridgeResponder(BaseResponder):
             adapter_target_norm=llm_embedding_norm(llm),
         )
         middle_pt_path = hf_hub_download(repo_id=self.repo_id, filename="middle.pt")
-        fusion_stack.load_state_dict(torch.load(middle_pt_path, map_location="cpu", weights_only=False))
+        fusion_stack.load_state_dict(
+            torch.load(middle_pt_path, map_location="cpu", weights_only=False)
+        )
 
-        self.model = Captioner(fusion_stack, llm, n_queries=int(self.cfg.qformer.n_queries))
+        self.model = Captioner(
+            fusion_stack, llm, n_queries=int(self.cfg.qformer.n_queries)
+        )
         self.model.to(self.device)
         self.model.eval()
         self.encoders = {
@@ -89,8 +97,12 @@ class AstroBridgeResponder(BaseResponder):
                 fused_features[name] = torch.cat(mod_feats, dim=0)
 
         pre, post = build_wrapper_text(self.tokenizer, questions)
-        pre_ids = self.tokenizer.encode(pre, add_special_tokens=False, return_tensors="pt").to(self.device)
-        post_ids = self.tokenizer.encode(post, add_special_tokens=False, return_tensors="pt").to(self.device)
+        pre_ids = self.tokenizer.encode(
+            pre, add_special_tokens=False, return_tensors="pt"
+        ).to(self.device)
+        post_ids = self.tokenizer.encode(
+            post, add_special_tokens=False, return_tensors="pt"
+        ).to(self.device)
 
         pre_ids = pre_ids.repeat(bsz, 1)
         post_ids = post_ids.repeat(bsz, 1)
@@ -115,12 +127,18 @@ class AstroBridgeResponder(BaseResponder):
 
         raw_inputs_list = []
         for sample in samples:
-            flux, wavelength, ivar, mask = trimmed_spectrum_arrays({
-                "flux": sample.flux,
-                "lambda": sample.wavelength,
-                "ivar": sample.ivar if sample.ivar is not None else np.ones_like(sample.flux),
-                "mask": sample.mask if sample.mask is not None else np.zeros_like(sample.flux, dtype=bool),
-            })
+            flux, wavelength, ivar, mask = trimmed_spectrum_arrays(
+                {
+                    "flux": sample.flux,
+                    "lambda": sample.wavelength,
+                    "ivar": sample.ivar
+                    if sample.ivar is not None
+                    else np.ones_like(sample.flux),
+                    "mask": sample.mask
+                    if sample.mask is not None
+                    else np.zeros_like(sample.flux, dtype=bool),
+                }
+            )
 
             spectrum_dict = {
                 "flux": torch.tensor(flux).float().unsqueeze(0),
@@ -151,6 +169,3 @@ class AstroBridgeResponder(BaseResponder):
                 )
             )
         return captions
-
-
-AstroBridgeCaptionResponder = AstroBridgeResponder

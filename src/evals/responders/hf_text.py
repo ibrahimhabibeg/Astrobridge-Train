@@ -16,14 +16,20 @@ from .utils import subsample_spectrum, format_spectrum_text, clean_and_extract_c
 
 class HFTextResponder(BaseResponder):
     def __init__(self, config: dict, device: str):
-        assert "hf_model_id" in config and config["hf_model_id"], "Missing 'hf_model_id' in config"
+        assert "hf_model_id" in config and config["hf_model_id"], (
+            "Missing 'hf_model_id' in config"
+        )
         self._model_id = config["hf_model_id"]
-        self.caption_prompt = resolve_caption_prompt(config, "caption_generation/text_baseline.jinja2")
+        self.caption_prompt = resolve_caption_prompt(
+            config, "caption_generation/text_baseline.jinja2"
+        )
         self._num_points = config.get("num_points", 100)
         self._max_tokens = config.get("max_tokens", 256)
         self._device = device
 
-        self._tokenizer = AutoTokenizer.from_pretrained(self._model_id, trust_remote_code=True)
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            self._model_id, trust_remote_code=True
+        )
         self._model = AutoModelForCausalLM.from_pretrained(
             self._model_id,
             device_map="auto",
@@ -50,7 +56,9 @@ class HFTextResponder(BaseResponder):
 
         messages_batch = []
         for sample in samples:
-            w_str, f_str = subsample_spectrum(sample.wavelength, sample.flux, num_points=self._num_points)
+            w_str, f_str = subsample_spectrum(
+                sample.wavelength, sample.flux, num_points=self._num_points
+            )
             spectrum_text = format_spectrum_text(w_str, f_str, self._num_points)
             full_prompt = f"{prompt}\n\n{spectrum_text}"
 
@@ -60,7 +68,9 @@ class HFTextResponder(BaseResponder):
             messages_batch.append(messages)
 
         texts = [
-            self._tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+            self._tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True
+            )
             for msgs in messages_batch
         ]
 
@@ -80,7 +90,9 @@ class HFTextResponder(BaseResponder):
 
         input_len = inputs["input_ids"].shape[1]
         generated_ids = output_ids[:, input_len:]
-        raw_responses = self._tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+        raw_responses = self._tokenizer.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )
 
         captions = []
         for sample, raw in zip(samples, raw_responses):
@@ -97,6 +109,3 @@ class HFTextResponder(BaseResponder):
                 )
             )
         return captions
-
-
-HFTextCaptionResponder = HFTextResponder
