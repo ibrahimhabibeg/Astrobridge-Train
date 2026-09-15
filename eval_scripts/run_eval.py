@@ -5,53 +5,63 @@ import subprocess
 from datetime import datetime
 import yaml
 import dotenv
-import modal
 import numpy as np
 
-volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
-app = modal.App("astrobridge-evaluation")
+try:
+    import modal
 
+    volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
+    app = modal.App("astrobridge-evaluation")
 
-def download_models():
-    """Download required models and datasets on Modal boot."""
-    from huggingface_hub import hf_hub_download, snapshot_download
+    def download_models():
+        """Download required models and datasets on Modal boot."""
+        from huggingface_hub import hf_hub_download, snapshot_download
 
-    astrobridge_id = "UniverseTBD/astrobridge-model-v3_qwen"
-    base_llm_id = "Qwen/Qwen3.5-9B"
+        astrobridge_id = "UniverseTBD/astrobridge-model-v3_qwen"
+        base_llm_id = "Qwen/Qwen3.5-9B"
 
-    print(f"Downloading AstroBridge extra weights: {astrobridge_id}")
-    snapshot_download(astrobridge_id)
-    hf_hub_download(repo_id=astrobridge_id, filename="middle.pt")
+        print(f"Downloading AstroBridge extra weights: {astrobridge_id}")
+        snapshot_download(astrobridge_id)
+        hf_hub_download(repo_id=astrobridge_id, filename="middle.pt")
 
-    print(f"Downloading Base LLM: {base_llm_id}")
-    snapshot_download(base_llm_id)
+        print(f"Downloading Base LLM: {base_llm_id}")
+        snapshot_download(base_llm_id)
 
-    print("Downloading evaluation datasets...")
-    hf_hub_download(
-        repo_id="UniverseTBD/AstroBridge-Data",
-        filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
-        repo_type="dataset",
+        print("Downloading evaluation datasets...")
+        hf_hub_download(
+            repo_id="UniverseTBD/AstroBridge-Data",
+            filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
+            repo_type="dataset",
+        )
+        hf_hub_download(
+            repo_id="UniverseTBD/AstroBridge-Data",
+            filename="observations/spectra/extracted_emission_lines.csv",
+            repo_type="dataset",
+        )
+        hf_hub_download(
+            repo_id="UniverseTBD/AstroBridge-Data",
+            filename="observations/spectra/extracted_types.csv",
+            repo_type="dataset",
+        )
+
+    image = (
+        modal.Image.debian_slim(python_version="3.10")
+        .pip_install_from_pyproject("pyproject.toml")
+        .pip_install("huggingface_hub", "pyyaml", "tqdm", "matplotlib", "Pillow", "torchvision")
+        .run_function(download_models)
+        .add_local_dir("src", remote_path="/root/src")
+        .add_local_dir("configs", remote_path="/root/configs")
     )
-    hf_hub_download(
-        repo_id="UniverseTBD/AstroBridge-Data",
-        filename="observations/spectra/extracted_emission_lines.csv",
-        repo_type="dataset",
-    )
-    hf_hub_download(
-        repo_id="UniverseTBD/AstroBridge-Data",
-        filename="observations/spectra/extracted_types.csv",
-        repo_type="dataset",
-    )
 
+    @app.function(image=image, volumes={"/root/evals": volume}, timeout=3600)
+    def run_evaluation_remote(config: dict, timestamp_dir: str):
+        output_base_dir = "/root/evals"
+        run_evaluation_core(config, timestamp_dir, output_base_dir)
+        volume.commit()
 
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .pip_install_from_pyproject("pyproject.toml")
-    .pip_install("huggingface_hub", "pyyaml", "tqdm", "matplotlib", "Pillow", "torchvision")
-    .run_function(download_models)
-    .add_local_dir("src", remote_path="/root/src")
-    .add_local_dir("configs", remote_path="/root/configs")
-)
+    entrypoint_decorator = app.local_entrypoint()
+except ImportError:
+    entrypoint_decorator = lambda fn: fn
 
 
 def run_evaluation_core(config: dict, timestamp_dir: str, output_base_dir: str):
@@ -60,9 +70,8 @@ def run_evaluation_core(config: dict, timestamp_dir: str, output_base_dir: str):
     from tqdm import tqdm
 
     from evals.data import (
-        load_test_spectra,
-        load_test_spectra_by_category,
-        load_test_spectra_emission_lines,
+        load_all_benchmark_spectra,
+        load_benchmark_dataset,
     )
     from evals.responders import EvalSample, get_responder
     from evals.tasks import get_task
@@ -80,13 +89,15 @@ def run_evaluation_core(config: dict, timestamp_dir: str, output_base_dir: str):
 
     # Load appropriate dataset
     if task_name == "emission_lines":
-        df_test = load_test_spectra_emission_lines()
+        df_test = load_benchmark_dataset("emission_lines")
     elif task_name == "source_classification":
-        df_test = load_test_spectra_by_category("class", list(task_kwargs["active_classes"].keys()))
+        df_test = load_benchmark_dataset("source_class")
     elif task_name == "subclass_classification":
-        df_test = load_test_spectra_by_category("subclass", list(task_kwargs["active_classes"].keys()))
+        df_test = load_benchmark_dataset("subclass")
+    elif task_name in ("distance", "distance_classification", "redshift"):
+        df_test = load_benchmark_dataset("redshift")
     else:
-        df_test = load_test_spectra()
+        df_test = load_all_benchmark_spectra()
 
     limit = run_config.get("limit")
     if limit is not None:
@@ -164,21 +175,7 @@ def run_evaluation_core(config: dict, timestamp_dir: str, output_base_dir: str):
     return timestamp_dir
 
 
-@app.function(
-    image=image,
-    timeout=86400,
-    volumes={"/outputs": volume},
-)
-def run_evaluation_remote(config: dict, timestamp_dir: str):
-    import sys
-
-    sys.path.insert(0, "/root/src")
-    os.chdir("/root")
-    run_evaluation_core(config, timestamp_dir, "/outputs")
-    return timestamp_dir
-
-
-@app.local_entrypoint()
+@entrypoint_decorator
 def main(task: str, responder: str, limit: int = None, gemini_model: str = None, gpu: str = None):
     with open(task, "r") as f:
         task_config = yaml.safe_load(f)

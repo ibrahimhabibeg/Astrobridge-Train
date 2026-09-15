@@ -2,7 +2,7 @@ import re
 from typing import List, Dict, Any, Optional
 import pandas as pd
 
-from ..data import load_emission_line_ground_truth
+from ..data import load_benchmark_dataset
 from ..prompts import render_prompt
 
 CANONICAL_LINES: List[str] = [
@@ -142,7 +142,7 @@ class EmissionLineTask:
 
         # Pre-load and group ground truth by wiki_entity_id
         if ground_truth_df is None:
-            ground_truth_df = load_emission_line_ground_truth()
+            ground_truth_df = load_benchmark_dataset("emission_lines")
 
         self.ground_truth_by_id: Dict[str, Dict[str, float]] = {}
         for _, row in ground_truth_df.iterrows():

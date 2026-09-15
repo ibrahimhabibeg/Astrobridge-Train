@@ -34,6 +34,12 @@ if str(_REPO_ROOT) not in sys.path:
 if str(_REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+from evals.config import (
+    DEFAULT_BASE_LLM_REPO,
+    DEFAULT_MODEL_REPO,
+)
+from evals.data import ensure_all_benchmark_files
+
 # Modal setup
 try:
     import modal
@@ -41,28 +47,28 @@ try:
     app = modal.App("astrobridge-caption-evaluation")
 
     def download_models():
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, "/root/src")
         from huggingface_hub import hf_hub_download, snapshot_download
+        from evals.config import (
+            DEFAULT_BASE_LLM_REPO,
+            DEFAULT_MODEL_REPO,
+        )
+        from evals.data import ensure_all_benchmark_files
 
-        astrobridge_id = "UniverseTBD/astrobridge-model-v7"
-        base_llm_id = "Qwen/Qwen3.5-9B"
-
-        print(f"Downloading AstroBridge extra weights: {astrobridge_id}")
+        print(f"Downloading AstroBridge extra weights: {DEFAULT_MODEL_REPO}")
         try:
-            snapshot_download(astrobridge_id)
-            hf_hub_download(repo_id=astrobridge_id, filename="middle.pt")
+            snapshot_download(DEFAULT_MODEL_REPO)
+            hf_hub_download(repo_id=DEFAULT_MODEL_REPO, filename="middle.pt")
         except Exception as e:
             print(f"Notice: {e}")
 
-        print(f"Downloading Base LLM: {base_llm_id}")
-        snapshot_download(base_llm_id)
+        print(f"Downloading Base LLM: {DEFAULT_BASE_LLM_REPO}")
+        snapshot_download(DEFAULT_BASE_LLM_REPO)
 
         print("Downloading benchmark evaluation datasets...")
-        for bench_file in ["redshift.parquet", "source_class.parquet", "subclass.parquet", "emission_lines.parquet"]:
-            hf_hub_download(
-                repo_id="UniverseTBD/AstroBridge-Data",
-                filename=f"captions/spectra/benchmarks/{bench_file}",
-                repo_type="dataset",
-            )
+        ensure_all_benchmark_files(target_dir="/root/data/benchmarks")
 
     image = (
         modal.Image.debian_slim(python_version="3.10")
@@ -73,6 +79,7 @@ try:
         .add_local_dir("configs", remote_path="/root/configs")
         .add_local_dir("eval_scripts", remote_path="/root/eval_scripts")
         .add_local_dir("eval_configs", remote_path="/root/eval_configs")
+        .add_local_dir("data", remote_path="/root/data")
     )
 
     @app.function(
@@ -143,6 +150,12 @@ def main_local(
 
     resp_tag = responder_config.get("responder_type") if responder_config else "cached_captions"
     task_name = task_config.get("name", "task")
+    benchmark_name = task_config.get("benchmark")
+    if not benchmark_name:
+        from evals.caption_tasks import get_caption_task
+        task = get_caption_task(task_name, **task_config.get("kwargs", {}))
+        benchmark_name = getattr(task, "benchmark_name", task_name)
+
     timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{task_name}")
 
     local_output_dir = os.path.join(os.getcwd(), "eval_results", "caption_eval", timestamp_dir)
@@ -171,7 +184,7 @@ def main_local(
             generate_captions_remote.with_options(gpu=gpu_type).remote(
                 responder_config=responder_config,
                 timestamp_dir=timestamp_dir,
-                benchmark=task_name,
+                benchmark=benchmark_name,
                 limit=limit,
                 batch_size=batch_size,
                 caption_prompt=caption_prompt,

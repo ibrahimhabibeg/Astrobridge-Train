@@ -1,4 +1,5 @@
 name: caption_subclass
+benchmark: subclass
 batch_size: 32
 kwargs:
   target_column: subclass

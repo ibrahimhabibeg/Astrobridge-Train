@@ -1,3 +1,4 @@
 name: caption_emission_lines
+benchmark: emission_lines
 batch_size: 32
 

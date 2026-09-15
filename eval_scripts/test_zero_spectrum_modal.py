@@ -87,7 +87,7 @@ def run_zero_spectrum_diagnostics(model_id: str = "UniverseTBD/astrobridge-model
 
     from evals.caption_responders.astrobridge import AstroBridgeCaptionResponder
     from evals.caption_responders.base import CaptionSample, DEFAULT_SPECTRUM_CAPTION_PROMPT
-    from evals.data import load_test_spectra
+    from evals.data import load_all_benchmark_spectra
     from captioner.utils.prompt import build_wrapper_text
 
     print(f"\n========================================================")
@@ -102,7 +102,7 @@ def run_zero_spectrum_diagnostics(model_id: str = "UniverseTBD/astrobridge-model
     }
     responder = AstroBridgeCaptionResponder(responder_config, device="cuda")
 
-    df_test = load_test_spectra()
+    df_test = load_all_benchmark_spectra()
 
     # Select target samples: Quasar (gmw_00000967) and Galaxy (gmw_00000415)
     quasar_rows = df_test[df_test["wiki_entity_id"] == "gmw_00000967"]

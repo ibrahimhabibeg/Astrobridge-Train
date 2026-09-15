@@ -68,8 +68,14 @@ def run_caption_evaluation(
     frontier = get_frontier_model(frontier_config)
 
     # Load dedicated benchmark dataset
-    print(f"Loading benchmark dataset for {task_name}...")
-    df_test = load_benchmark_dataset(task_name)
+    benchmark_name = task_config.get("benchmark") or getattr(task, "benchmark_name", None)
+    if not benchmark_name:
+        raise ValueError(
+            f"Task '{task_name}' does not specify a canonical benchmark dataset. "
+            f"Please specify 'benchmark' in the task YAML or on the CaptionEvalTask."
+        )
+    print(f"Loading benchmark dataset '{benchmark_name}' for task '{task_name}'...")
+    df_test = load_benchmark_dataset(benchmark_name)
 
     if limit is not None:
         df_test = df_test.head(limit)
@@ -107,7 +113,7 @@ def run_caption_evaluation(
         run_caption_generation(
             responder_config=responder_config,
             output_path=captions_path,
-            benchmark=task_name,
+            benchmark=benchmark_name,
             limit=limit,
             batch_size=batch_size,
             caption_prompt=caption_prompt_override,

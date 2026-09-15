@@ -20,6 +20,7 @@ class CategoricalCaptionTask(CaptionEvalTask):
     ):
         self.name = name
         self.target_column = target_column
+        self.benchmark_name = "subclass" if "subclass" in target_column.lower() else "source_class"
         self.active_classes = active_classes
         self.categories = list(dict.fromkeys(self.active_classes.values()))
         self._options_text = ", ".join(self.categories)

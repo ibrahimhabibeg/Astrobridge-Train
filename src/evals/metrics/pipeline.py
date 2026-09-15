@@ -6,7 +6,7 @@ import pandas as pd
 
 from .classification import classification_report
 from .multilabel import multilabel_report
-from ..data import load_test_spectra
+from ..data import load_all_benchmark_spectra
 
 
 def _load_metadata(results_dir: str) -> dict:
@@ -41,10 +41,13 @@ def _prepare_classification_df(results_dir: str) -> pd.DataFrame:
         df["pred"] = "UNKNOWN"
 
     # Merge survey info for per-survey breakdowns
-    test_spectra = load_test_spectra()
+    test_spectra = load_all_benchmark_spectra()
+    if "wiki_entity_id" in df.columns and "wiki_entity_id" not in test_spectra.columns:
+        test_spectra["wiki_entity_id"] = test_spectra["sample_id"]
+    merge_col = "sample_id" if "sample_id" in df.columns else "wiki_entity_id"
     df = df.merge(
-        test_spectra[["wiki_entity_id", "survey"]],
-        on="wiki_entity_id",
+        test_spectra[[merge_col, "survey"]],
+        on=merge_col,
         how="left",
     )
 

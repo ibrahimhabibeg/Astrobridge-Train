@@ -1,4 +1,5 @@
 name: caption_distance
+benchmark: redshift
 batch_size: 32
 kwargs:
   scheme: 3-group

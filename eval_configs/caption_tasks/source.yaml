@@ -1,4 +1,5 @@
 name: caption_source
+benchmark: source_class
 batch_size: 32
 kwargs:
   target_column: source_class

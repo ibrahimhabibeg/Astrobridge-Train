@@ -17,8 +17,20 @@ from evals.caption_tasks import (
     CategoricalCaptionTask,
 )
 from evals.data import (
+    BenchmarkDataManager,
+    BenchmarkSpec,
+    get_default_data_manager,
     load_benchmark_dataset,
     load_all_benchmark_spectra,
+)
+from evals.config import (
+    DEFAULT_HF_DATA_REPO,
+    DEFAULT_HF_EVALS_SUBDIR,
+    get_default_cache_dir,
+    get_hf_benchmark_subpath,
+    get_hf_data_repo,
+    get_hf_evals_subdir,
+    get_repo_root,
 )
 from evals.frontier import get_frontier_model
 from evals.caption_eval import compute_caption_metrics
@@ -198,6 +210,130 @@ class TestCaptionEval(unittest.TestCase):
         all_df = load_all_benchmark_spectra()
         self.assertEqual(len(all_df), 717)
         self.assertIn("sample_id", all_df.columns)
+
+    def test_validate_and_normalize_strict(self):
+        mgr = get_default_data_manager()
+        spec = mgr.resolve_spec("redshift")
+
+        # 1. Missing both sample_id and object_id raises ValueError
+        df_no_id = pd.DataFrame({
+            "ra": [1, 2],
+            "survey": ["sdss", "sdss"],
+            "spectrum": [[1.0], [2.0]],
+            "ground_truth": [0.1, 0.2],
+        })
+        with self.assertRaises(ValueError) as ctx:
+            mgr._validate_and_normalize(df_no_id, spec)
+        self.assertIn("missing required identifier column", str(ctx.exception))
+
+        # 2. Missing survey raises ValueError (never assume SDSS)
+        df_no_survey = pd.DataFrame({
+            "sample_id": ["1", "2"],
+            "spectrum": [[1.0], [2.0]],
+            "ground_truth": [0.1, 0.2],
+        })
+        with self.assertRaises(ValueError) as ctx:
+            mgr._validate_and_normalize(df_no_survey, spec)
+        self.assertIn("missing required 'survey' column", str(ctx.exception))
+
+        # 3. Missing spectrum raises ValueError
+        df_no_spec = pd.DataFrame({
+            "sample_id": ["1", "2"],
+            "survey": ["desi", "desi"],
+            "ground_truth": [0.1, 0.2],
+        })
+        with self.assertRaises(ValueError) as ctx:
+            mgr._validate_and_normalize(df_no_spec, spec)
+        self.assertIn("missing the 'spectrum' column", str(ctx.exception))
+
+        # 4. Missing ground_truth raises ValueError
+        df_no_gt = pd.DataFrame({
+            "sample_id": ["1", "2"],
+            "survey": ["desi", "desi"],
+            "spectrum": [[1.0], [2.0]],
+        })
+        with self.assertRaises(ValueError) as ctx:
+            mgr._validate_and_normalize(df_no_gt, spec)
+        self.assertIn("missing the 'ground_truth' column", str(ctx.exception))
+
+        # 5. Standardizes sample_id from sample_id column
+        df_valid_sample = pd.DataFrame({
+            "sample_id": [12345, 67890],
+            "survey": ["desi", "sdss"],
+            "spectrum": [[1.0], [2.0]],
+            "ground_truth": [0.1, 0.2],
+        })
+        normalized_sample = mgr._validate_and_normalize(df_valid_sample, spec)
+        self.assertEqual(normalized_sample["sample_id"].tolist(), ["12345", "67890"])
+        self.assertEqual(normalized_sample["survey"].tolist(), ["desi", "sdss"])
+
+        # 6. Standardizes sample_id from object_id column
+        df_valid_object = pd.DataFrame({
+            "object_id": [12345, 67890],
+            "survey": ["desi", "sdss"],
+            "spectrum": [[1.0], [2.0]],
+            "ground_truth": [0.1, 0.2],
+        })
+        normalized_object = mgr._validate_and_normalize(df_valid_object, spec)
+        self.assertEqual(normalized_object["sample_id"].tolist(), ["12345", "67890"])
+        self.assertEqual(normalized_object["survey"].tolist(), ["desi", "sdss"])
+
+        # 7. Missing expected ground truth keys in dict raises ValueError
+        df_invalid_gt = pd.DataFrame({
+            "sample_id": ["1", "2"],
+            "survey": ["desi", "sdss"],
+            "spectrum": [[1.0], [2.0]],
+            "ground_truth": [{"z": 0.1}, {"z": 0.2}],
+        })
+        with self.assertRaises(ValueError) as ctx:
+            mgr._validate_and_normalize(df_invalid_gt, spec)
+        self.assertIn("missing expected ground truth key 'redshift_bin'", str(ctx.exception))
+
+    def test_benchmark_data_manager_canonical_specs(self):
+        mgr = get_default_data_manager()
+        self.assertIn("redshift", mgr.list_available_benchmarks())
+        self.assertIn("emission_lines", mgr.list_available_benchmarks())
+
+        # Test canonical resolution
+        spec_dist = mgr.resolve_spec("redshift")
+        self.assertEqual(spec_dist.name, "redshift")
+        self.assertEqual(spec_dist.filename, "redshift.parquet")
+
+        spec_src = mgr.resolve_spec("source_class")
+        self.assertEqual(spec_src.name, "source_class")
+
+        spec_em = mgr.resolve_spec("emission_lines")
+        self.assertEqual(spec_em.name, "emission_lines")
+        self.assertEqual(
+            spec_dist.required_columns,
+            ("sample_id", "survey", "spectrum", "ground_truth"),
+        )
+
+        # Test non-canonical name raises clean ValueError
+        with self.assertRaises(ValueError) as ctx:
+            mgr.resolve_spec("distance")
+        self.assertIn("Unknown benchmark 'distance'", str(ctx.exception))
+        self.assertIn("Valid benchmarks", str(ctx.exception))
+
+    def test_eval_config(self):
+        root = get_repo_root()
+        self.assertTrue(root.is_dir())
+        self.assertEqual(get_hf_data_repo(), DEFAULT_HF_DATA_REPO)
+        self.assertEqual(get_hf_evals_subdir(), DEFAULT_HF_EVALS_SUBDIR)
+        self.assertEqual(
+            get_hf_benchmark_subpath("redshift.parquet"),
+            "evals/spectra/redshift.parquet",
+        )
+        cache_dir = get_default_cache_dir()
+        self.assertTrue(str(cache_dir).endswith("data/benchmarks"))
+
+        # Test environment variable overrides
+        with patch.dict(os.environ, {"ASTROBRIDGE_HF_DATA_REPO": "Custom/Repo", "ASTROBRIDGE_HF_EVALS_SUBDIR": "custom/path"}):
+            self.assertEqual(get_hf_data_repo(), "Custom/Repo")
+            self.assertEqual(get_hf_evals_subdir(), "custom/path")
+            self.assertEqual(get_hf_benchmark_subpath("test.parquet"), "custom/path/test.parquet")
+
+
 
     def test_compute_caption_metrics_single_label(self):
         with tempfile.TemporaryDirectory() as tmpdir:

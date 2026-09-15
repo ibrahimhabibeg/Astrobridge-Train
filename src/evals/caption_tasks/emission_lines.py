@@ -182,6 +182,7 @@ def _resolve_ambiguous_line(
 class CaptionEmissionLineTask(CaptionEvalTask):
     """Evaluates the model's ability to report visible emission lines from a candidate query list."""
     name: str = "caption_emission_lines"
+    benchmark_name: str = "emission_lines"
 
     def __init__(self, **kwargs):
         self.canonical_lines = list(CANONICAL_LINES)

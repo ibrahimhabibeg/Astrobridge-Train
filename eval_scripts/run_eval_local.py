@@ -19,9 +19,8 @@ import numpy as np
 import yaml
 
 from evals.data import (
-    load_test_spectra,
-    load_test_spectra_by_category,
-    load_test_spectra_emission_lines,
+    load_all_benchmark_spectra,
+    load_benchmark_dataset,
 )
 from evals.metrics import compute_and_save_metrics
 from evals.responders import EvalSample, get_responder
@@ -48,13 +47,15 @@ def run_evaluation(config: dict, output_dir: str):
 
     # Load appropriate dataset
     if task_name == "emission_lines":
-        df_test = load_test_spectra_emission_lines()
+        df_test = load_benchmark_dataset("emission_lines")
     elif task_name == "source_classification":
-        df_test = load_test_spectra_by_category("class", list(task_kwargs["active_classes"].keys()))
+        df_test = load_benchmark_dataset("source_class")
     elif task_name == "subclass_classification":
-        df_test = load_test_spectra_by_category("subclass", list(task_kwargs["active_classes"].keys()))
+        df_test = load_benchmark_dataset("subclass")
+    elif task_name in ("distance", "distance_classification", "redshift"):
+        df_test = load_benchmark_dataset("redshift")
     else:
-        df_test = load_test_spectra()
+        df_test = load_all_benchmark_spectra()
 
     limit = run_config.get("limit")
     if limit is not None:

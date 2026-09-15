@@ -22,6 +22,21 @@ import subprocess
 from datetime import datetime
 import yaml
 
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if str(_REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
+
+from evals.config import (
+    DEFAULT_BASE_LLM_REPO,
+    DEFAULT_MODEL_REPO,
+)
+from evals.data import ensure_all_benchmark_files
+
 try:
     import modal
     volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
@@ -34,29 +49,28 @@ except ImportError:
 
 def download_models():
     """Pre-bake required models and benchmark datasets into the Modal image cache."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, "/root/src")
     from huggingface_hub import hf_hub_download, snapshot_download
+    from evals.config import (
+        DEFAULT_BASE_LLM_REPO,
+        DEFAULT_MODEL_REPO,
+    )
+    from evals.data import ensure_all_benchmark_files
 
-    astrobridge_id = "UniverseTBD/astrobridge-model-v7"
-    base_llm_id = "Qwen/Qwen3.5-9B"
-
-    print(f"Downloading AstroBridge weights: {astrobridge_id}")
+    print(f"Downloading AstroBridge weights: {DEFAULT_MODEL_REPO}")
     try:
-        snapshot_download(astrobridge_id)
-        hf_hub_download(repo_id=astrobridge_id, filename="middle.pt")
+        snapshot_download(DEFAULT_MODEL_REPO)
+        hf_hub_download(repo_id=DEFAULT_MODEL_REPO, filename="middle.pt")
     except Exception as e:
         print(f"Notice during AstroBridge download: {e}")
 
-    print(f"Downloading Base LLM: {base_llm_id}")
-    snapshot_download(base_llm_id)
+    print(f"Downloading Base LLM: {DEFAULT_BASE_LLM_REPO}")
+    snapshot_download(DEFAULT_BASE_LLM_REPO)
 
     print("Downloading benchmark evaluation datasets...")
-    for bench_file in ["redshift.parquet", "source_class.parquet", "subclass.parquet", "emission_lines.parquet"]:
-        hf_hub_download(
-            repo_id="UniverseTBD/AstroBridge-Data",
-            filename=f"captions/spectra/benchmarks/{bench_file}",
-            repo_type="dataset",
-            force_download=True,
-        )
+    ensure_all_benchmark_files(target_dir="/root/data/benchmarks")
 
 
 if app is not None:
@@ -69,6 +83,7 @@ if app is not None:
         .add_local_dir("configs", remote_path="/root/configs")
         .add_local_dir("eval_scripts", remote_path="/root/eval_scripts")
         .add_local_dir("eval_configs", remote_path="/root/eval_configs")
+        .add_local_dir("data", remote_path="/root/data")
     )
 
     @app.function(

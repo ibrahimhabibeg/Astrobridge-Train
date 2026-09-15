@@ -18,6 +18,7 @@ BIN_TO_LABEL = {
 class CaptionDistanceTask(CaptionEvalTask):
     """Evaluates the model's ability to describe distance/redshift features in spectra."""
     name: str = "caption_distance"
+    benchmark_name: str = "redshift"
 
     def __init__(self, scheme: Union[BucketScheme, str] = "3-group", **kwargs):
         if isinstance(scheme, str):
