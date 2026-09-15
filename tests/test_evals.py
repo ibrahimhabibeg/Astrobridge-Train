@@ -68,7 +68,8 @@ def test_distance_task():
     assert "C: >0.5" in prompt
 
     assert task.default_parse("FINAL ANSWER: B") == "B"
-    assert task.default_parse("Therefore, the answer is A.") == "A"
+    assert task.default_parse("FINAL ANSWER: A\nWait, FINAL ANSWER: B") == "B"
+    assert task.default_parse("Therefore, the answer is A.") is None
     assert task.default_parse("Random gibberish without option") is None
 
 
@@ -84,7 +85,8 @@ def test_source_task():
 
     assert task.default_parse("FINAL ANSWER: A") == "Galaxy"
     assert task.default_parse("FINAL ANSWER: B") == "Quasar"
-    assert task.default_parse("Therefore, the answer is A.") == "Galaxy"
+    assert task.default_parse("FINAL ANSWER: A\nActually FINAL ANSWER: B") == "Quasar"
+    assert task.default_parse("Therefore, the answer is A.") is None
     assert task.default_parse("FINAL ANSWER: Quasar") == "Quasar"
     assert task.default_parse("This is clearly a QSO.") == "Quasar"
     assert task.default_parse("Random text without matches") is None
@@ -104,7 +106,8 @@ def test_subclass_task():
 
     assert task.default_parse("FINAL ANSWER: A") == "AGN"
     assert task.default_parse("FINAL ANSWER: B") == "Starburst"
-    assert task.default_parse("The category is C") == "Starforming"
+    assert task.default_parse("FINAL ANSWER: A\nWait, FINAL ANSWER: C") == "Starforming"
+    assert task.default_parse("The category is C") is None
     assert task.default_parse("FINAL ANSWER: Starburst") == "Starburst"
     assert task.default_parse("Based on lines, this is an AGN.") == "AGN"
     assert task.default_parse("Unrelated text") is None
@@ -138,6 +141,9 @@ def test_emission_line_task():
 
     parsed_none = parse_fn("FINAL ANSWER: NONE")
     assert parsed_none == []
+
+    assert parse_fn("No final answer stated.") is None
+    assert parse_fn("") is None
 
 
 def test_mock_responder():
@@ -279,8 +285,9 @@ def test_choice_parsers():
     assert parse_single_choice("FINAL ANSWER: (A)", allowed_letters={"A", "B"}) == "A"
     assert parse_single_choice("FINAL ANSWER: **B**", allowed_letters={"A", "B"}) == "B"
     assert parse_single_choice("FINAL ANSWER: Option A", allowed_letters={"A", "B"}) == "A"
-    assert parse_single_choice("Therefore, the answer is B.", allowed_letters={"A", "B"}) == "B"
-    assert parse_single_choice("The category is A", allowed_letters={"A", "B"}) == "A"
+    assert parse_single_choice("FINAL ANSWER: A\nActually FINAL ANSWER: B", allowed_letters={"A", "B"}) == "B"
+    assert parse_single_choice("Therefore, the answer is B.", allowed_letters={"A", "B"}) is None
+    assert parse_single_choice("The category is A", allowed_letters={"A", "B"}) is None
     assert parse_single_choice("FINAL ANSWER: C", allowed_letters={"A", "B"}) is None
     assert parse_single_choice("Random text") is None
 
@@ -289,6 +296,9 @@ def test_choice_parsers():
     assert parse_multi_choice("FINAL ANSWER: [A, C]", allowed_letters={"A", "B", "C"}) == ["A", "C"]
     assert parse_multi_choice("FINAL ANSWER: **A**, **B**", allowed_letters={"A", "B", "C"}) == ["A", "B"]
     assert parse_multi_choice("FINAL ANSWER: A and B", allowed_letters={"A", "B", "C"}) == ["A", "B"]
+    assert parse_multi_choice("FINAL ANSWER: A\nActually: FINAL ANSWER: B, C", allowed_letters={"A", "B", "C"}) == ["B", "C"]
+    assert parse_multi_choice("FINAL ANSWER: A\nReconsidering: FINAL ANSWER: NONE", allowed_letters={"A", "B", "C"}) == []
     assert parse_multi_choice("FINAL ANSWER: NONE", allowed_letters={"A", "B", "C"}) == []
     assert parse_multi_choice("No lines present. FINAL ANSWER: NONE") == []
-    assert parse_multi_choice("Random text without choices", allowed_letters={"A", "B"}) == []
+    assert parse_multi_choice("Random text without choices", allowed_letters={"A", "B"}) is None
+    assert parse_multi_choice("") is None

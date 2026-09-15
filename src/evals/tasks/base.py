@@ -33,22 +33,17 @@ def parse_single_choice(
     if not raw_text:
         return None
 
-    match = re.search(
-        r"FINAL ANSWER:\s*(?:option\s*|choice\s*)?[\*\(\[]*([A-Za-z])[\*\)\]\.\:]*(?:\s|$)",
-        raw_text,
-        re.IGNORECASE,
+    matches = list(
+        re.finditer(
+            r"FINAL ANSWER:\s*(?:option\s*|choice\s*)?[\*\(\[]*([A-Za-z])[\*\)\]\.\:]*(?:\s|$)",
+            raw_text,
+            re.IGNORECASE,
+        )
     )
-    if match:
-        ch = match.group(1).upper()
-        if not allowed_letters or ch in allowed_letters:
-            return ch
+    if not matches:
+        return None
 
-    match = re.search(
-        r"(?:answer|category|choice|option)\s*(?:is\s*)?[:\s]*[\*\(\[]*([A-Za-z])[\*\)\]\.\:]*(?:\s|$)",
-        raw_text,
-        re.IGNORECASE,
-    )
-    if match:
+    for match in reversed(matches):
         ch = match.group(1).upper()
         if not allowed_letters or ch in allowed_letters:
             return ch
@@ -58,12 +53,15 @@ def parse_single_choice(
 
 def parse_multi_choice(
     raw_text: str, allowed_letters: Optional[Set[str]] = None
-) -> List[str]:
+) -> Optional[List[str]]:
     if not raw_text:
-        return []
+        return None
 
-    match = re.search(r"FINAL ANSWER:\s*(.*)", raw_text, re.IGNORECASE)
-    target = match.group(1).strip() if match else raw_text.strip()
+    matches = list(re.finditer(r"FINAL ANSWER:\s*([^\n]*)", raw_text, re.IGNORECASE))
+    if not matches:
+        return None
+
+    target = matches[-1].group(1).strip()
 
     if re.search(r"\bNONE\b", target, re.IGNORECASE):
         other_letters = [

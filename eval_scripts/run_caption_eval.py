@@ -106,9 +106,9 @@ def run_caption_evaluation(
                     pred = [l for l in pred if l in cand_set]
                 gt_set = set(gt.keys()) if isinstance(gt, dict) else set(gt)
                 pred_set = set(pred) if isinstance(pred, (list, set)) else set()
-                is_correct = (gt_set == pred_set)
+                is_correct = (gt_set == pred_set) if pred is not None else False
             else:
-                is_correct = (str(pred).strip().lower() == str(gt).strip().lower())
+                is_correct = (str(pred).strip().lower() == str(gt).strip().lower()) if pred is not None else False
 
             record = {
                 "sample_id": sid,

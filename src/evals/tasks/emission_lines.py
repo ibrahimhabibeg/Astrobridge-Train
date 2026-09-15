@@ -58,24 +58,26 @@ class EmissionLineTask(Task):
 
     def get_parse_fn(
         self, item: Optional[Dict[str, Any]] = None
-    ) -> Callable[[str], List[str]]:
+    ) -> Callable[[str], Optional[List[str]]]:
         candidate_lines = self._get_candidate_lines(item)
         letter_to_line = {
             string.ascii_uppercase[i]: line for i, line in enumerate(candidate_lines)
         }
         allowed_letters = set(letter_to_line.keys())
 
-        def parse(raw_text: str) -> List[str]:
+        def parse(raw_text: str) -> Optional[List[str]]:
             chosen_letters = parse_multi_choice(
                 raw_text, allowed_letters=allowed_letters
             )
+            if chosen_letters is None:
+                return None
             return [letter_to_line[l] for l in chosen_letters if l in letter_to_line]
 
         return parse
 
     def default_parse(
         self, raw_text: str, item: Optional[Dict[str, Any]] = None, **kwargs: Any
-    ) -> List[str]:
+    ) -> Optional[List[str]]:
         parse_fn = self.get_parse_fn(item)
         return parse_fn(raw_text)
 
