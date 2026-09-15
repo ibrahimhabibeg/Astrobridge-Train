@@ -12,8 +12,6 @@ from .base import FrontierModel, FrontierResponse
 
 
 class GeminiFrontierModel(FrontierModel):
-    """Frontier model implementation wrapping Google Gemini via google-genai SDK."""
-
     def __init__(self, config: dict):
         self._model_name = config.get("gemini_model", "gemini-2.5-flash")
         self._num_workers = config.get("gemini_num_workers", config.get("num_workers", 8))
@@ -53,7 +51,6 @@ class GeminiFrontierModel(FrontierModel):
         fallback_tag: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> FrontierResponse:
-        """Query Gemini with chat session for fallback support."""
         gen_config = types.GenerateContentConfig(
             max_output_tokens=self._max_tokens,
             temperature=self._temperature,
@@ -73,8 +70,7 @@ class GeminiFrontierModel(FrontierModel):
         parsed = parse_fn(raw_text)
         forced_fallback = False
 
-        # If parsing returned None or UNKNOWN, and fallback_tag is provided, attempt chat retry
-        if (parsed is None or parsed == "UNKNOWN" or parsed == []) and fallback_tag and chat:
+        if parsed is None and fallback_tag and chat:
             try:
                 forced_fallback = True
                 fallback_config = types.GenerateContentConfig(
@@ -101,18 +97,19 @@ class GeminiFrontierModel(FrontierModel):
             metadata={"model": self._model_name},
         )
 
-    def predict_batch(
+    def predict_all(
         self,
         prompts: List[str],
-        parse_fn: Callable[[str], Any],
+        parse_fn: Callable[[str], Any] | List[Callable[[str], Any]],
         fallback_tag: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> List[FrontierResponse]:
-        """Query Gemini in parallel using ThreadPoolExecutor."""
         responses: List[Optional[FrontierResponse]] = [None] * len(prompts)
+        is_fn_list = isinstance(parse_fn, list)
 
         def worker(idx: int, p: str):
-            return idx, self.predict(p, parse_fn, fallback_tag=fallback_tag, system_prompt=system_prompt)
+            fn = parse_fn[idx] if is_fn_list else parse_fn
+            return idx, self.predict(p, fn, fallback_tag=fallback_tag, system_prompt=system_prompt)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self._num_workers) as executor:
             future_to_idx = {

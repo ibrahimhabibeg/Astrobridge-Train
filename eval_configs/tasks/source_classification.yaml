@@ -1,8 +1,0 @@
-name: source_classification
-batch_size: 32
-# limit: 5          # Optional: Limit number of samples to evaluate
-# suffix_tag: dev   # Optional: Custom suffix for the output directory
-kwargs:
-  active_classes:
-    GALAXY: Galaxy
-    QSO: Quasar

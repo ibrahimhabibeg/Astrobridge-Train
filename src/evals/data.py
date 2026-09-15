@@ -1,147 +1,202 @@
-import functools
+from __future__ import annotations
+
+from dataclasses import dataclass
 import os
 from pathlib import Path
-from typing import Optional
+import shutil
+from typing import Dict, List, Optional, Tuple, Union
 import pandas as pd
 from huggingface_hub import hf_hub_download
 
-_REPO_ID = "UniverseTBD/AstroBridge-Data"
-_SPECTRA_FILE = "observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet"
-_V7_SUBSET_SPECTRA_FILE = "observations/spectra/desi_sdss_subset_crossmatch_nolan_1.0arcsec.parquet"
-_EMISSION_LINES_FILE = "observations/spectra/extracted_emission_lines.csv"
-_TYPES_FILE = "observations/spectra/extracted_types.csv"
+from .config import (
+    get_default_cache_dir,
+    get_hf_benchmark_subpath,
+    get_hf_data_repo,
+)
 
 
-def _load_legacy_test_spectra() -> pd.DataFrame:
-    """Downloads the AstroBridge spectra parquet, filters to test split, deduplicates (400 samples)."""
-    print("Loading legacy dataset (desi_sdss_crossmatch_nolan_1.0arcsec.parquet)...")
-    parquet_path = hf_hub_download(
-        repo_id=_REPO_ID, filename=_SPECTRA_FILE, repo_type="dataset"
-    )
-    df = pd.read_parquet(parquet_path)
-
-    print("Filtering and deduplicating data...")
-    df_test = df[df["split"] == "test"]
-    df_test = df_test.drop_duplicates(subset=["wiki_entity_id"]).reset_index(drop=True)
-    print(f"Found {len(df_test)} unique legacy test samples.")
-    return df_test
-
-
-def _find_v7_splits_path() -> Path:
-    candidates = [
-        Path(__file__).parent / "splits" / "v7_splits.parquet",
-        Path(__file__).resolve().parent / "splits" / "v7_splits.parquet",
-        Path("src/evals/data/splits/v7_splits.parquet"),
-        Path("eval_results/v7_splits.parquet"),
-        Path("/root/src/evals/data/splits/v7_splits.parquet"),
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-    raise FileNotFoundError(
-        f"Could not find v7_splits.parquet in any of: {[str(c) for c in candidates]}"
+@dataclass(frozen=True)
+class BenchmarkSpec:
+    name: str
+    filename: str
+    hf_subpath: str
+    expected_ground_truth_keys: Tuple[str, ...]
+    required_columns: Tuple[str, ...] = (
+        "sample_id",
+        "survey",
+        "spectrum",
+        "ground_truth",
     )
 
 
-def _load_v7_test_spectra() -> pd.DataFrame:
-    """Loads clean v7 validation + test spectra (641 unique samples).
-
-    Uses the v7 stratified split policy and reads raw spectra from
-    desi_sdss_subset_crossmatch_nolan_1.0arcsec.parquet, matching
-    the exact training pipeline canonical object loader.
-    """
-    splits_path = _find_v7_splits_path()
-    print(f"Loading v7 manifest splits from {splits_path}...")
-    v7_manifest = pd.read_parquet(splits_path)
-
-    # Use both validation and test data
-    val_test_mask = v7_manifest["split"].isin(["val", "test"]) & v7_manifest["has_spectra"]
-    v7_val_test = v7_manifest[val_test_mask]
-    target_object_ids = set(v7_val_test["object_id"].astype(str))
-
-    from captioner.data.spectra_dataset import load_spectra_table
-    print(f"Loading v7 spectra from {_V7_SUBSET_SPECTRA_FILE}...")
-    spectra_df = load_spectra_table(
-        hf_path=_REPO_ID,
-        files=[_V7_SUBSET_SPECTRA_FILE],
-    )
-
-    df_matched = spectra_df[spectra_df["object_id"].astype(str).isin(target_object_ids)].copy()
-    df_matched = df_matched.drop_duplicates(subset=["wiki_entity_id"]).reset_index(drop=True)
-    print(f"Found {len(df_matched)} unique v7 (val + test) test samples.")
-    return df_matched
-
-
-@functools.lru_cache(maxsize=4)
-def load_test_spectra(split_version: Optional[str] = None) -> pd.DataFrame:
-    """Downloads or filters test spectra.
-
-    Args:
-        split_version: 'legacy' (default, 400 samples from upstream test split)
-                       or 'v7' (641 unique val+test spectra from v7 stratified split).
-                       If None, falls back to env var ASTROBRIDGE_SPLIT or 'legacy'.
-    """
-    version = (split_version or os.environ.get("ASTROBRIDGE_SPLIT", "legacy")).lower().strip()
-    if version in ("v7", "v7_val_test", "v7-val-test"):
-        return _load_v7_test_spectra()
-    elif version in ("legacy", "upstream", "v5", "v6"):
-        return _load_legacy_test_spectra()
-    else:
-        raise ValueError(
-            f"Unknown split_version '{version}'. Expected 'legacy' or 'v7'."
-        )
+_BENCHMARK_SPECS: Dict[str, BenchmarkSpec] = {
+    "redshift": BenchmarkSpec(
+        name="redshift",
+        filename="redshift.parquet",
+        hf_subpath=get_hf_benchmark_subpath("redshift.parquet"),
+        expected_ground_truth_keys=("z", "redshift_bin"),
+    ),
+    "source_class": BenchmarkSpec(
+        name="source_class",
+        filename="source_class.parquet",
+        hf_subpath=get_hf_benchmark_subpath("source_class.parquet"),
+        expected_ground_truth_keys=("source_class",),
+    ),
+    "subclass": BenchmarkSpec(
+        name="subclass",
+        filename="subclass.parquet",
+        hf_subpath=get_hf_benchmark_subpath("subclass.parquet"),
+        expected_ground_truth_keys=("subclass",),
+    ),
+    "emission_lines": BenchmarkSpec(
+        name="emission_lines",
+        filename="emission_lines.parquet",
+        hf_subpath=get_hf_benchmark_subpath("emission_lines.parquet"),
+        expected_ground_truth_keys=("detected_lines", "absent_lines"),
+    ),
+}
 
 
-def load_emission_line_ground_truth() -> pd.DataFrame:
-    """Downloads the emission lines ground truth CSV."""
-    print("Loading emission lines ground truth...")
-    csv_path = hf_hub_download(
-        repo_id=_REPO_ID, filename=_EMISSION_LINES_FILE, repo_type="dataset"
-    )
-    return pd.read_csv(csv_path)
+class BenchmarkDataManager:
+    def __init__(
+        self,
+        cache_dir: Optional[Union[str, Path]] = None,
+        repo_id: Optional[str] = None,
+    ):
+        self.cache_dir = Path(cache_dir).resolve() if cache_dir else get_default_cache_dir()
+        self.repo_id = repo_id or get_hf_data_repo()
+        self._df_cache: Dict[str, pd.DataFrame] = {}
+        self._all_spectra_cache: Optional[pd.DataFrame] = None
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+    def resolve_spec(self, benchmark_name: str) -> BenchmarkSpec:
+        key = str(benchmark_name).strip().lower()
+        if key in _BENCHMARK_SPECS:
+            return _BENCHMARK_SPECS[key]
+        valid_names = sorted(_BENCHMARK_SPECS.keys())
+        raise ValueError(f"Unknown benchmark '{benchmark_name}'. Valid benchmarks: {valid_names}")
+
+    def get_local_path(self, spec: BenchmarkSpec) -> Path:
+        return self.cache_dir / spec.filename
+
+    def is_cached_locally(self, spec: BenchmarkSpec) -> bool:
+        return self.get_local_path(spec).is_file()
+
+    def download_benchmark_file(self, spec: BenchmarkSpec, force_download: bool = False) -> Path:
+        local_path = self.get_local_path(spec)
+        if local_path.is_file() and not force_download:
+            return local_path
+
+        try:
+            downloaded = hf_hub_download(
+                repo_id=self.repo_id,
+                filename=spec.hf_subpath,
+                repo_type="dataset",
+                force_download=force_download,
+            )
+            shutil.copyfile(downloaded, local_path)
+            return local_path
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to download benchmark '{spec.name}' from Hugging Face "
+                f"({self.repo_id}:{spec.hf_subpath}): {exc}"
+            ) from exc
+
+    def ensure_benchmark_file(self, spec: BenchmarkSpec) -> Path:
+        return self.download_benchmark_file(spec)
+
+    def ensure_all_files(self, force_download: bool = False) -> Dict[str, Path]:
+        return {
+            spec.filename: self.download_benchmark_file(spec, force_download=force_download)
+            for spec in _BENCHMARK_SPECS.values()
+        }
+
+    def _validate_and_normalize(self, df: pd.DataFrame, spec: BenchmarkSpec) -> pd.DataFrame:
+        if "sample_id" in df.columns:
+            df["sample_id"] = df["sample_id"].astype(str)
+        elif "object_id" in df.columns:
+            df["sample_id"] = df["object_id"].astype(str)
+        else:
+            raise ValueError(f"Dataset for benchmark '{spec.name}' missing identifier column ('sample_id' or 'object_id').")
+
+        if "survey" not in df.columns:
+            raise ValueError(f"Dataset for benchmark '{spec.name}' missing required 'survey' column.")
+        if "spectrum" not in df.columns:
+            raise ValueError(f"Dataset for benchmark '{spec.name}' missing 'spectrum' column.")
+        if "ground_truth" not in df.columns:
+            raise ValueError(f"Dataset for benchmark '{spec.name}' missing 'ground_truth' column.")
+
+        if len(df) > 0 and isinstance(df["ground_truth"].iloc[0], dict):
+            first_gt = df["ground_truth"].iloc[0]
+            for key in spec.expected_ground_truth_keys:
+                if key not in first_gt:
+                    raise ValueError(f"Dataset for benchmark '{spec.name}' missing ground truth key '{key}'.")
+
+        return df
+
+    def load_benchmark(self, benchmark_name: str, force_reload: bool = False) -> pd.DataFrame:
+        spec = self.resolve_spec(benchmark_name)
+        if not force_reload and spec.name in self._df_cache:
+            return self._df_cache[spec.name].copy()
+
+        local_path = self.ensure_benchmark_file(spec)
+        df = pd.read_parquet(local_path)
+        normalized_df = self._validate_and_normalize(df, spec)
+        self._df_cache[spec.name] = normalized_df
+        return normalized_df.copy()
+
+    def load_all_unique_spectra(self, force_reload: bool = False) -> pd.DataFrame:
+        if not force_reload and self._all_spectra_cache is not None:
+            return self._all_spectra_cache.copy()
+
+        canonical_names = ["redshift", "source_class", "subclass", "emission_lines"]
+        dfs: List[pd.DataFrame] = []
+        for name in canonical_names:
+            df = self.load_benchmark(name)
+            common_cols = [c for c in ["sample_id", "survey", "spectrum", "ra", "dec", "z"] if c in df.columns]
+            dfs.append(df[common_cols].copy())
+
+        combined = pd.concat(dfs, ignore_index=True)
+        dedup = combined.drop_duplicates(subset=["sample_id"]).reset_index(drop=True)
+        self._all_spectra_cache = dedup
+        return dedup.copy()
+
+    def list_available_benchmarks(self) -> List[str]:
+        return sorted(_BENCHMARK_SPECS.keys())
 
 
-def load_test_spectra_emission_lines(split_version: Optional[str] = None) -> pd.DataFrame:
-    """Test spectra filtered to those with emission line annotations."""
-    df_spectra = load_test_spectra(split_version=split_version)
-    df_lines = load_emission_line_ground_truth()
-    valid_ids = set(df_lines["wiki_entity_id"])
-    df_test_lines = df_spectra[df_spectra["wiki_entity_id"].isin(valid_ids)].reset_index(drop=True)
-    print(f"Found {len(df_test_lines)} test spectra matching emission line ground truth.")
-    return df_test_lines
+_GLOBAL_DATA_MANAGER: Optional[BenchmarkDataManager] = None
 
 
-@functools.lru_cache(maxsize=1)
-def _load_types_ground_truth() -> pd.DataFrame:
-    """Downloads the source/subclass types ground truth CSV."""
-    print("Loading source classification ground truth...")
-    csv_path = hf_hub_download(
-        repo_id=_REPO_ID, filename=_TYPES_FILE, repo_type="dataset"
-    )
-    return pd.read_csv(csv_path)
+def get_default_data_manager() -> BenchmarkDataManager:
+    global _GLOBAL_DATA_MANAGER
+    if _GLOBAL_DATA_MANAGER is None:
+        _GLOBAL_DATA_MANAGER = BenchmarkDataManager()
+    return _GLOBAL_DATA_MANAGER
 
 
-def load_test_spectra_by_category(
-    target_column: str,
-    active_keys: list[str],
-    split_version: Optional[str] = None,
-) -> pd.DataFrame:
-    """Test spectra filtered and merged by a categorical column (class or subclass).
+def load_benchmark_dataset(benchmark_name: str) -> pd.DataFrame:
+    return get_default_data_manager().load_benchmark(benchmark_name)
 
-    Args:
-        target_column: Column name in the types CSV to filter on ('class' or 'subclass').
-        active_keys: List of values in target_column to keep.
-        split_version: 'legacy' (default) or 'v7'.
-    """
-    df_spectra = load_test_spectra(split_version=split_version)
-    df_types = _load_types_ground_truth()
 
-    df_types = df_types[df_types[target_column].isin(active_keys)]
+def load_all_benchmark_spectra() -> pd.DataFrame:
+    return get_default_data_manager().load_all_unique_spectra()
 
-    df_merged = df_spectra.merge(
-        df_types[["wiki_entity_id", target_column]],
-        on="wiki_entity_id",
-        how="inner",
-    ).reset_index(drop=True)
-    print(f"Found {len(df_merged)} test spectra matching active {target_column} values.")
-    return df_merged
+
+def ensure_all_benchmark_files(
+    target_dir: Optional[Union[str, Path]] = None,
+    repo_id: Optional[str] = None,
+    force_download: bool = False,
+) -> Dict[str, Path]:
+    mgr = BenchmarkDataManager(cache_dir=target_dir, repo_id=repo_id)
+    return mgr.ensure_all_files(force_download=force_download)
+
+
+__all__ = [
+    "BenchmarkSpec",
+    "BenchmarkDataManager",
+    "get_default_data_manager",
+    "load_benchmark_dataset",
+    "load_all_benchmark_spectra",
+    "ensure_all_benchmark_files",
+]

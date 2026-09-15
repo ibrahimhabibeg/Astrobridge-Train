@@ -1,20 +1,45 @@
-"""Evaluation metrics package.
+from __future__ import annotations
 
-Provides modular, reusable metric functions for single-label classification
-and multi-label detection tasks.
+from .classification import (
+    accuracy,
+    macro_f1,
+    weighted_f1,
+    ordinal_mae,
+    confusion_matrix_dict,
+    classification_report,
+)
+from .multilabel import (
+    sample_precision_recall_f1,
+    micro_precision_recall_f1,
+    snr_weighted_metrics,
+    micro_snr_weighted_metrics,
+    per_label_report,
+    macro_label_f1,
+    exact_match_rate,
+    multilabel_hamming_loss,
+    multilabel_report,
+)
+from .reporter import compute_caption_metrics, generate_report_markdown
 
-Quick reference:
+compute_metrics = compute_caption_metrics
 
-    # Use individual metric functions
-    from evals.metrics.classification import accuracy, macro_f1, ordinal_mae
-    from evals.metrics.multilabel import sample_precision_recall_f1, snr_weighted_metrics
-
-    # Or use the full pipeline (compute everything + save to disk)
-    from evals.metrics import compute_and_save_metrics
-"""
-
-# Re-export the pipeline entry point for backward compatibility
-from .pipeline import compute_and_save_metrics
-
-__all__ = ["compute_and_save_metrics"]
-
+__all__ = [
+    "accuracy",
+    "macro_f1",
+    "weighted_f1",
+    "ordinal_mae",
+    "confusion_matrix_dict",
+    "classification_report",
+    "sample_precision_recall_f1",
+    "micro_precision_recall_f1",
+    "snr_weighted_metrics",
+    "micro_snr_weighted_metrics",
+    "per_label_report",
+    "macro_label_f1",
+    "exact_match_rate",
+    "multilabel_hamming_loss",
+    "multilabel_report",
+    "compute_caption_metrics",
+    "compute_metrics",
+    "generate_report_markdown",
+]

@@ -1,57 +1,36 @@
-from typing import Protocol, Any, Dict, Optional
+from __future__ import annotations
+
+from typing import Any
+
+from .base import Task, parse_multi_choice, parse_single_choice
+from .distance import DistanceTask
+from .emission_lines import EmissionLineTask
+from .source import SourceTask
+from .subclass import SubclassTask
+
+TASK_REGISTRY = {
+    "distance": DistanceTask,
+    "source": SourceTask,
+    "subclass": SubclassTask,
+    "emission_lines": EmissionLineTask,
+}
 
 
-class EvalTask(Protocol):
-    name: str
-
-    def build_prompt(
-        self, *, image_mode: bool, spectrum_text: Optional[str] = None
-    ) -> str:
-        """Build the complete evaluation prompt for this task.
-
-        Three calling patterns:
-          task.build_prompt(image_mode=True)                       # Vision models (base_qwen, gemini)
-          task.build_prompt(image_mode=False, spectrum_text=data)   # Text model (base_qwen_text)
-          task.build_prompt(image_mode=False)                       # Native model (astrobridge)
-        """
-        ...
-
-    def fallback_tag(self) -> str:
-        """Return the fallback tag to append when retrying failed parses."""
-        ...
-
-    def default_parse(self, raw_text: str) -> Any:
-        """Extract structured output from raw model text."""
-        ...
-
-    def extract_ground_truth(self, item: Any) -> Any:
-        """Extract ground truth for this task from a data row/item."""
-        ...
-
-    def get_config(self) -> Dict[str, Any]:
-        """Return serializable configuration/metadata for this task."""
-        ...
-
-
-def get_task(task_type: str, **kwargs) -> EvalTask:
-    from .distance_classification import DistanceClassificationTask
-    from .emission_lines import EmissionLineTask
-    from .source_classification import CategoricalClassificationTask
-
-    TASK_REGISTRY = {
-        "distance_classification": DistanceClassificationTask,
-        "emission_lines": EmissionLineTask,
-        "source_classification": lambda **kw: CategoricalClassificationTask(
-            name="source_classification", target_column="class", **kw
-        ),
-        "subclass_classification": lambda **kw: CategoricalClassificationTask(
-            name="subclass_classification", target_column="subclass", **kw
-        ),
-    }
-
+def get_task(task_type: str, **kwargs: Any) -> Task:
     if task_type not in TASK_REGISTRY:
         raise ValueError(
-            f"Unknown task '{task_type}'. Available tasks: {list(TASK_REGISTRY.keys())}"
+            f"Unknown task '{task_type}'. Available tasks: {sorted(list(TASK_REGISTRY.keys()))}"
         )
-
     return TASK_REGISTRY[task_type](**kwargs)
+
+
+__all__ = [
+    "Task",
+    "DistanceTask",
+    "SourceTask",
+    "SubclassTask",
+    "EmissionLineTask",
+    "get_task",
+    "parse_single_choice",
+    "parse_multi_choice",
+]

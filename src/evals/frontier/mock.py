@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import re
 from typing import Any, Callable, Dict, List, Optional
 
 from .base import FrontierModel, FrontierResponse
 
 
 class MockFrontierModel(FrontierModel):
-    """Mock frontier model for deterministic offline testing and CI."""
-
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         self.default_answer = self.config.get("mock_answer", "B")
@@ -30,29 +27,24 @@ class MockFrontierModel(FrontierModel):
     ) -> FrontierResponse:
         forced_fallback = False
 
-        # Detect task type from prompt context to give smart mock answers
-        if "EMISSION LINES:" in prompt:
-            # Emission lines task
+        if "emission lines" in prompt.lower() or "candidate lines" in prompt.lower():
             if self.simulate_fallback:
                 raw_text = "I observe some spectral peaks."
                 parsed = parse_fn(raw_text)
                 if parsed is None and fallback_tag:
-                    raw_text += f"{fallback_tag}Hα, Hβ"
+                    raw_text += f"{fallback_tag}A, B"
                     parsed = parse_fn(raw_text)
                     forced_fallback = True
             else:
-                raw_text = "Analysis shows strong lines.\nEMISSION LINES: Hα, Hβ"
+                raw_text = "Analysis shows strong lines.\nFINAL ANSWER: A, B"
                 parsed = parse_fn(raw_text)
         elif "Galaxy" in prompt or "Quasar" in prompt:
-            # Source classification task
-            raw_text = f"Based on the broad emission lines, this object is a Quasar.\nFINAL ANSWER: Quasar"
+            raw_text = "Based on the broad emission lines, this object is a Quasar.\nFINAL ANSWER: Quasar"
             parsed = parse_fn(raw_text)
         elif "Starburst" in prompt or "AGN" in prompt:
-            # Subclass classification task
-            raw_text = f"Based on the spectral features, this is AGN.\nFINAL ANSWER: AGN"
+            raw_text = "Based on the spectral features, this is AGN.\nFINAL ANSWER: AGN"
             parsed = parse_fn(raw_text)
         else:
-            # Distance classification task
             ans = self.default_answer
             if self.simulate_fallback:
                 raw_text = "The spectrum shows redshifted lines."
@@ -72,15 +64,21 @@ class MockFrontierModel(FrontierModel):
             metadata={"mock": True},
         )
 
-    def predict_batch(
+    def predict_all(
         self,
         prompts: List[str],
-        parse_fn: Callable[[str], Any],
+        parse_fn: Callable[[str], Any] | List[Callable[[str], Any]],
         fallback_tag: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> List[FrontierResponse]:
+        is_fn_list = isinstance(parse_fn, list)
         return [
-            self.predict(p, parse_fn, fallback_tag=fallback_tag, system_prompt=system_prompt)
-            for p in prompts
+            self.predict(
+                p,
+                parse_fn[i] if is_fn_list else parse_fn,
+                fallback_tag=fallback_tag,
+                system_prompt=system_prompt,
+            )
+            for i, p in enumerate(prompts)
         ]
 

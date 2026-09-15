@@ -1,238 +1,208 @@
 #!/usr/bin/env python
-"""Unified Modal/Local caption-based evaluation script.
-
-Usage:
-    # Run full pipeline (Modal GPU for captioning + Local Gemini for property prediction)
-    modal run eval_scripts/run_caption_eval.py \
-        --task eval_configs/caption_tasks/distance.yaml \
-        --responder eval_configs/caption_responders/astrobridge.yaml \
-        --frontier eval_configs/frontier/gemini.yaml \
-        --limit 100
-
-    # Or run purely from cached captions locally:
-    python eval_scripts/run_caption_eval.py \
-        --task eval_configs/caption_tasks/distance.yaml \
-        --captions eval_results/cached_captions/astrobridge_captions.jsonl \
-        --frontier eval_configs/frontier/gemini.yaml
-"""
+from __future__ import annotations
 
 import argparse
 import json
 import os
-import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
 import dotenv
 import yaml
-import numpy as np
 
-# Modal setup
-try:
-    import modal
-    volume = modal.Volume.from_name("astrobridge-evals", create_if_missing=True)
-    app = modal.App("astrobridge-caption-evaluation")
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if str(_REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
 
-    def download_models():
-        from huggingface_hub import hf_hub_download, snapshot_download
+from evals.data import load_benchmark_dataset
+from evals.frontier import get_frontier_model
+from evals.metrics import compute_caption_metrics
+from evals.responders import SpectrumSample, get_responder
+from evals.tasks import get_task
 
-        astrobridge_id = "UniverseTBD/astrobridge-model-v5"
-        base_llm_id = "Qwen/Qwen3.5-9B"
 
-        print(f"Downloading AstroBridge extra weights: {astrobridge_id}")
-        try:
-            snapshot_download(astrobridge_id)
-            hf_hub_download(repo_id=astrobridge_id, filename="middle.pt")
-        except Exception as e:
-            print(f"Notice: {e}")
+def run_caption_evaluation(
+    task_config: dict,
+    frontier_config: dict,
+    responder_config: Optional[dict],
+    captions_file: Optional[str],
+    output_dir: str,
+    limit: Optional[int] = None,
+    batch_size: int = 32,
+) -> Dict[str, Any]:
+    os.makedirs(output_dir, exist_ok=True)
+    task = get_task(task_config["name"], **task_config.get("kwargs", {}))
+    frontier = get_frontier_model(frontier_config)
 
-        print(f"Downloading Base LLM: {base_llm_id}")
-        snapshot_download(base_llm_id)
+    benchmark_name = task_config.get("benchmark", getattr(task, "benchmark_name", task.name))
+    df = load_benchmark_dataset(benchmark_name)
+    if limit is not None:
+        df = df.head(limit)
 
-        print("Downloading evaluation datasets...")
-        hf_hub_download(
-            repo_id="UniverseTBD/AstroBridge-Data",
-            filename="observations/spectra/desi_sdss_crossmatch_nolan_1.0arcsec.parquet",
-            repo_type="dataset",
+    gt_by_id: Dict[str, Any] = {}
+    rows_by_id: Dict[str, Any] = {}
+    for _, row in df.iterrows():
+        sid = str(row.get("sample_id", row.get("object_id", "")))
+        gt_by_id[sid] = task.extract_ground_truth(row)
+        rows_by_id[sid] = row
+
+    captions_by_id: Dict[str, Dict[str, Any]] = {}
+    if captions_file and os.path.exists(captions_file):
+        with open(captions_file, "r") as f:
+            for line in f:
+                if line.strip():
+                    item = json.loads(line)
+                    sid = str(item.get("sample_id", item.get("object_id", "")))
+                    if sid in gt_by_id:
+                        captions_by_id[sid] = item
+    elif responder_config:
+        captions_path = os.path.join(output_dir, "captions.jsonl")
+        from eval_scripts.generate_captions import run_caption_generation
+        run_caption_generation(
+            responder_config=responder_config,
+            output_path=captions_path,
+            benchmark=benchmark_name,
+            limit=limit,
+            batch_size=batch_size,
+            df=df,
         )
-        hf_hub_download(
-            repo_id="UniverseTBD/AstroBridge-Data",
-            filename="observations/spectra/extracted_emission_lines.csv",
-            repo_type="dataset",
-        )
-        hf_hub_download(
-            repo_id="UniverseTBD/AstroBridge-Data",
-            filename="observations/spectra/extracted_types.csv",
-            repo_type="dataset",
-        )
+        with open(captions_path, "r") as f:
+            for line in f:
+                if line.strip():
+                    item = json.loads(line)
+                    sid = str(item.get("sample_id", item.get("object_id", "")))
+                    if sid in gt_by_id:
+                        captions_by_id[sid] = item
+    else:
+        raise ValueError("Must provide either responder_config or captions_file.")
 
-    image = (
-        modal.Image.debian_slim(python_version="3.10")
-        .pip_install_from_pyproject("pyproject.toml")
-        .pip_install("huggingface_hub", "pyyaml", "tqdm", "matplotlib", "Pillow", "torchvision")
-        .run_function(download_models)
-        .add_local_dir("src", remote_path="/root/src")
-        .add_local_dir("configs", remote_path="/root/configs")
+    eval_ids = [sid for sid in gt_by_id if sid in captions_by_id]
+    frontier_prompts = [
+        task.build_frontier_prompt(captions_by_id[sid]["caption"], item=rows_by_id[sid])
+        for sid in eval_ids
+    ]
+    parse_fns = [task.get_parse_fn(item=rows_by_id[sid]) for sid in eval_ids]
+
+    frontier_responses = frontier.predict_all(
+        prompts=frontier_prompts,
+        parse_fn=parse_fns,
+        fallback_tag=task.fallback_tag(),
     )
 
-    @app.function(
-        image=image,
-        timeout=86400,
-        volumes={"/outputs": volume},
-    )
-    def generate_captions_remote(responder_config: dict, timestamp_dir: str, limit: int = None, caption_prompt: str = None):
-        import sys
-        sys.path.insert(0, "/root/src")
-        os.chdir("/root")
+    predictions_path = os.path.join(output_dir, "predictions.jsonl")
+    with open(predictions_path, "w") as pred_f:
+        for sid, prompt, f_resp in zip(eval_ids, frontier_prompts, frontier_responses):
+            gt = gt_by_id[sid]
+            pred = f_resp.parsed
+            row = rows_by_id[sid]
 
-        import torch
-        from evals.caption_responders import CaptionSample, get_caption_responder
-        from evals.data import load_test_spectra
-        from tqdm import tqdm
+            if "emission_lines" in task.name:
+                cand_list = row.get("candidate_query_lines", None)
+                if cand_list is not None and len(cand_list) > 0 and isinstance(pred, (list, set)):
+                    cand_set = {str(k) for k in cand_list}
+                    pred = [l for l in pred if l in cand_set]
+                gt_set = set(gt.keys()) if isinstance(gt, dict) else set(gt)
+                pred_set = set(pred) if isinstance(pred, (list, set)) else set()
+                is_correct = (gt_set == pred_set) if pred is not None else False
+            else:
+                is_correct = (str(pred).strip().lower() == str(gt).strip().lower()) if pred is not None else False
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        responder = get_caption_responder(responder_config, device)
-        df_test = load_test_spectra()
+            record = {
+                "sample_id": sid,
+                "survey": str(row.get("survey", "unknown")),
+                "task": task.name,
+                "ground_truth": gt,
+                "caption": {
+                    "text": captions_by_id[sid]["caption"],
+                    "responder_type": captions_by_id[sid].get("responder_type", "unknown"),
+                    "model_id": captions_by_id[sid].get("model_id", "unknown"),
+                },
+                "frontier_evaluation": {
+                    "frontier_model": frontier_config.get("gemini_model", frontier_config.get("frontier_type")),
+                    "prompt": prompt,
+                    "raw_response": f_resp.raw_text,
+                    "prediction": pred,
+                    "is_correct": is_correct,
+                    "forced_fallback": f_resp.forced_fallback,
+                },
+            }
+            if "regime" in row:
+                record["regime"] = str(row["regime"])
+            if "candidate_query_lines" in row:
+                record["candidate_query_lines"] = [str(k) for k in row["candidate_query_lines"]]
 
-        if limit is not None:
-            df_test = df_test.head(limit)
+            pred_f.write(json.dumps(record) + "\n")
 
-        out_dir = os.path.join("/outputs", timestamp_dir)
-        os.makedirs(out_dir, exist_ok=True)
-        captions_path = os.path.join(out_dir, "captions.jsonl")
+    run_config_path = os.path.join(output_dir, "run_config.json")
+    with open(run_config_path, "w") as f:
+        json.dump(
+            {
+                "task": task.get_config(),
+                "frontier": frontier.get_config(),
+                "responder": responder_config or {"source": captions_file},
+                "total_samples": len(eval_ids),
+                "timestamp": datetime.now().isoformat(),
+            },
+            f,
+            indent=4,
+        )
 
-        batch_size = responder_config.get("batch_size", 32)
-        def chunker(seq, size):
-            return (seq[pos : pos + size] for pos in range(0, len(seq), size))
-
-        with open(captions_path, "w") as out_f:
-            for batch_df in tqdm(list(chunker(df_test, batch_size)), desc="Remote Caption Generation"):
-                samples = []
-                surveys = batch_df["survey"].tolist() if "survey" in batch_df.columns else ["sdss"] * len(batch_df)
-
-                for i, (_, row) in enumerate(batch_df.iterrows()):
-                    spec_data = row["spectrum"]
-                    flux = np.array(spec_data["flux"])
-                    wavelength = np.array(spec_data["lambda"])
-                    mask = (
-                        np.array(spec_data["mask"]).astype(bool)
-                        if "mask" in spec_data
-                        else np.zeros_like(flux, dtype=bool)
-                    )
-                    ivar = np.array(spec_data["ivar"]) if "ivar" in spec_data else None
-                    samples.append(
-                        CaptionSample(
-                            sample_id=str(row["wiki_entity_id"]),
-                            wavelength=wavelength,
-                            flux=flux,
-                            mask=mask,
-                            survey=surveys[i],
-                            ivar=ivar,
-                        )
-                    )
-
-                captions = responder.generate_captions(samples, prompt_override=caption_prompt)
-                for c in captions:
-                    record = {
-                        "wiki_entity_id": c.sample_id,
-                        "survey": c.survey,
-                        "caption": c.caption,
-                        "responder_type": c.responder_type,
-                        "model_id": c.model_id,
-                        "caption_prompt": c.caption_prompt,
-                    }
-                    out_f.write(json.dumps(record) + "\n")
-
-        volume.commit()
-        return timestamp_dir
-
-except ImportError:
-    app = None
+    metrics = compute_caption_metrics(output_dir, task)
+    return metrics
 
 
-def main_local(task: str, frontier: str, responder: str = None, captions: str = None, limit: int = None, caption_prompt: str = None, gemini_model: str = None, gpu: str = None):
-    dotenv.load_dotenv()
-    with open(task, "r") as f:
-        task_config = yaml.safe_load(f)
-    with open(frontier, "r") as f:
-        frontier_config = yaml.safe_load(f)
-
-    responder_config = None
-    if responder:
-        with open(responder, "r") as f:
-            responder_config = yaml.safe_load(f)
-
-    if gemini_model:
-        frontier_config["gemini_model"] = gemini_model
-
-    resp_tag = responder_config.get("responder_type") if responder_config else "cached"
-    task_name = task_config.get("name", "task")
-    timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{task_name}")
-
-    local_output_dir = os.path.join(os.getcwd(), "eval_results", "caption_eval", timestamp_dir)
-    os.makedirs(local_output_dir, exist_ok=True)
-
-    captions_file = captions
-
-    if not captions_file and responder_config:
-        if responder_config.get("responder_type") == "mock" or os.environ.get("RUN_LOCAL_ONLY"):
-            print("Running caption generation locally...")
-            from eval_scripts.run_caption_eval_local import run_caption_evaluation
-            run_caption_evaluation(
-                task_config=task_config,
-                frontier_config=frontier_config,
-                responder_config=responder_config,
-                captions_file=None,
-                output_dir=local_output_dir,
-                limit=limit,
-                caption_prompt_override=caption_prompt,
-            )
-            return
-        else:
-            gpu_type = gpu or responder_config.get("gpu", "A100-80GB")
-            print(f"Running Caption Generation REMOTELY on Modal GPU ({gpu_type})...")
-            generate_captions_remote.with_options(gpu=gpu_type).remote(
-                responder_config, timestamp_dir, limit=limit, caption_prompt=caption_prompt
-            )
-            print("Caption generation completed on Modal. Syncing captions to local output dir...")
-            subprocess.run(
-                ["modal", "volume", "get", "astrobridge-evals", f"{timestamp_dir}/captions.jsonl", local_output_dir],
-                check=True,
-            )
-            captions_file = os.path.join(local_output_dir, "captions.jsonl")
-
-    # Run Stage 2 & 3 locally using the Frontier VLM
-    print("Evaluating captions with Frontier VLM locally...")
-    from eval_scripts.run_caption_eval_local import run_caption_evaluation
-    run_caption_evaluation(
-        task_config=task_config,
-        frontier_config=frontier_config,
-        responder_config=None,
-        captions_file=captions_file,
-        output_dir=local_output_dir,
-        limit=limit,
-        caption_prompt_override=caption_prompt,
-    )
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Unified caption evaluation script.")
+def main():
+    parser = argparse.ArgumentParser(description="Run caption-based spectra evaluation.")
     parser.add_argument("--task", type=str, required=True, help="Path to task YAML config.")
     parser.add_argument("--frontier", type=str, required=True, help="Path to frontier model YAML config.")
     parser.add_argument("--responder", type=str, default=None, help="Path to responder YAML config.")
-    parser.add_argument("--captions", type=str, default=None, help="Path to captions.jsonl.")
+    parser.add_argument("--captions", type=str, default=None, help="Path to pre-generated captions.jsonl.")
     parser.add_argument("--limit", type=int, default=None, help="Sample limit.")
-    parser.add_argument("--caption-prompt", type=str, default=None, help="Prompt override.")
-    parser.add_argument("--gemini-model", type=str, default=None, help="Gemini model override.")
-    parser.add_argument("--gpu", type=str, default=None, help="GPU override for Modal.")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size.")
+    parser.add_argument("--gemini-model", type=str, default=None, help="Override Gemini model.")
+    parser.add_argument("--output-dir", type=str, default=None, help="Custom output directory.")
+    parser.add_argument("--suffix-tag", type=str, default=None, help="Optional suffix for the output directory name.")
     args = parser.parse_args()
 
-    main_local(
-        task=args.task,
-        frontier=args.frontier,
-        responder=args.responder,
-        captions=args.captions,
-        limit=args.limit,
-        caption_prompt=args.caption_prompt,
-        gemini_model=args.gemini_model,
-        gpu=args.gpu,
-    )
+    dotenv.load_dotenv()
 
+    with open(args.task, "r") as f:
+        task_config = yaml.safe_load(f)
+    with open(args.frontier, "r") as f:
+        frontier_config = yaml.safe_load(f)
+    if args.gemini_model:
+        frontier_config["gemini_model"] = args.gemini_model
+
+    responder_config = None
+    if args.responder:
+        with open(args.responder, "r") as f:
+            responder_config = yaml.safe_load(f)
+
+    resp_tag = responder_config.get("responder_type", "responder") if responder_config else "cached"
+    task_name = task_config.get("name", "task")
+
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        tag_suffix = f"_{args.suffix_tag}" if args.suffix_tag else ""
+        timestamp_dir = datetime.now().strftime(f"%Y%m%d_%H%M%S_{resp_tag}_{task_name}{tag_suffix}")
+        output_dir = os.path.join(os.getcwd(), "eval_results", "caption_eval", timestamp_dir)
+
+    print(f"Starting caption evaluation: task={task_name}, output={output_dir}")
+    metrics = run_caption_evaluation(
+        task_config=task_config,
+        frontier_config=frontier_config,
+        responder_config=responder_config,
+        captions_file=args.captions,
+        output_dir=output_dir,
+        limit=args.limit,
+        batch_size=args.batch_size,
+    )
+    print(f"Evaluation complete. Results written to {output_dir}")
+
+
+if __name__ == "__main__":
+    main()

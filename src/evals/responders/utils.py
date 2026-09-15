@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 import io
+import re
+from typing import Tuple
 import matplotlib.pyplot as plt
+import numpy as np
 
 
-def render_spectrum_plot(wavelength, flux, mask=None):
-    """Render a 1D spectrum to PNG bytes for vision-language models."""
+def render_spectrum_plot(wavelength: np.ndarray, flux: np.ndarray, mask: np.ndarray | None = None) -> bytes:
     fig, ax = plt.subplots(figsize=(10, 4))
-
     if mask is not None:
         valid = ~mask
         ax.plot(wavelength[valid], flux[valid], color="blue", lw=1, label="Valid")
@@ -22,23 +25,63 @@ def render_spectrum_plot(wavelength, flux, mask=None):
     plt.close(fig)
     return buf.getvalue()
 
-import numpy as np
 
-def subsample_spectrum(wavelength, flux, num_points=100):
-    """Downsample a spectrum to evenly-spaced points and format as strings."""
-    wavelength = np.array(wavelength).flatten()
-    flux = np.array(flux).flatten()
-    indices = np.linspace(0, len(wavelength) - 1, num_points, dtype=int)
-    w_sub = wavelength[indices]
-    f_sub = flux[indices]
+def subsample_spectrum(wavelength: np.ndarray, flux: np.ndarray, num_points: int = 100) -> Tuple[str, str]:
+    w_arr = np.array(wavelength).flatten()
+    f_arr = np.array(flux).flatten()
+    indices = np.linspace(0, len(w_arr) - 1, num_points, dtype=int)
+    w_sub = w_arr[indices]
+    f_sub = f_arr[indices]
     w_str = ", ".join([f"{w:.1f}" for w in w_sub])
     f_str = ", ".join([f"{f:.3f}" for f in f_sub])
     return w_str, f_str
 
+
 def format_spectrum_text(w_str: str, f_str: str, num_points: int) -> str:
-    """Format subsampled spectrum data as a text block for prompts."""
     return (
         f"Spectrum Data ({num_points} evenly spaced points):\n"
         f"Wavelength (Å): [{w_str}]\n"
         f"Flux: [{f_str}]"
     )
+
+
+def clean_and_extract_caption(raw_text: str) -> str:
+    if not raw_text:
+        return ""
+
+    text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL).strip()
+    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL).strip()
+
+    match = re.search(r"\bCAPTION:\s*(.*)", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+
+    match = re.search(r"\*\*(?:Final\s+)?Caption:?\*\*\s*:?\s*(.*)", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+
+    match = re.search(r"\*(?:Revised\s+)?Draft(?:\s*\d+)?:\*\s*(?:CAPTION:\s*)?(.*)", text, re.DOTALL | re.IGNORECASE)
+    if match and len(match.group(1).strip()) > 20:
+        text = match.group(1).strip()
+
+    match = re.search(r"(?:In summary|Summary|Conclusion):\s*(.*)", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+
+    stop_patterns = [
+        r"\n\s*(?:Note|Explanation|Justification|Alternative interpretation|\d+\.\s*Final Polish|\*Wait).*$",
+    ]
+    for pattern in stop_patterns:
+        text = re.split(pattern, text, flags=re.DOTALL | re.IGNORECASE)[0].strip()
+
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if len(paragraphs) > 1 and any(
+        kw in paragraphs[0].lower()
+        for kw in ["the user wants", "analyze the image", "analyze the spectrum", "initial observation", "1. analyze"]
+    ):
+        for p in reversed(paragraphs):
+            if not p.startswith("*") and not p.startswith("#") and not p.startswith("**") and len(p.split()) >= 6:
+                return p.strip()
+
+    return text.strip()

@@ -1,252 +1,123 @@
+from __future__ import annotations
+
 import re
-from typing import List, Dict, Any, Optional
+import string
+from typing import Any, Callable, Dict, List, Optional
 import pandas as pd
 
-from ..data import load_emission_line_ground_truth
+from ..prompts import render_prompt
+from .base import Task, parse_multi_choice
 
 CANONICAL_LINES: List[str] = [
-    # "Lyα",
-    # "O I 1304",
-    # "[O II] 3727",
-    "Hγ",
-    # "[O III] 4363",
-    "Hβ",
-    # "[O III] 5007",
-    # "[N II] 6583",
-    "Hα",
-    # "[S II] 6720",
-    # "[O II] 7325",
+    "HALPHA",
+    "HBETA",
+    "HGAMMA",
+    "OIII_5007",
+    "OIII_4959",
+    "OII_3726",
+    "OII_3729",
+    "NII_6584",
+    "NII_6548",
+    "SII_6716",
+    "SII_6731",
+    "MGII_2796",
+    "MGII_2803",
+    "CIV_1549",
 ]
 
-# Mapping from CSV LINE_NAME to canonical line name
-CSV_TO_CANONICAL: Dict[str, str] = {
-    # [O II] 3727
-    "OII_3726": "[O II] 3727",
-    "OII_3729": "[O II] 3727",
-    # Hγ
-    "HGAMMA": "Hγ",
-    "HGAMMA_BROAD": "Hγ",
-    # Hβ
-    "HBETA": "Hβ",
-    "HBETA_BROAD": "Hβ",
-    # [O III] 5007
-    "OIII_4959": "[O III] 5007",
-    "OIII_5007": "[O III] 5007",
-    # [N II] 6583
-    "NII_6548": "[N II] 6583",
-    "NII_6584": "[N II] 6583",
-    # Hα
-    "HALPHA": "Hα",
-    "HALPHA_BROAD": "Hα",
-    # [S II] 6720
-    "SII_6716": "[S II] 6720",
-    "SII_6731": "[S II] 6720",
-}
 
-# Inactive line mappings (kept for reference, filtered out below)
-_INACTIVE_CSV_MAPPINGS: Dict[str, str] = {
-    "LYALPHA": "Lyα",
-    "OI_1304": "O I 1304",
-    "OIII_4363": "[O III] 4363",
-    "OII_7320": "[O II] 7325",
-    "OII_7330": "[O II] 7325",
-}
-
-
-def clean_key(s: str) -> str:
-    """Normalize line name string for robust alias matching."""
-    s = s.strip().lower()
-    s = (
-        s.replace("α", "alpha")
-        .replace("β", "beta")
-        .replace("γ", "gamma")
-        .replace("δ", "delta")
-    )
-    for ch in "[](){}*-_,;:. \t\n/\\":
-        s = s.replace(ch, "")
-    return s
-
-
-def _build_alias_map() -> Dict[str, str]:
-    alias_map: Dict[str, str] = {}
-    active_lines = set(CANONICAL_LINES)
-
-    for line in active_lines:
-        alias_map[clean_key(line)] = line
-
-    for csv_name, canonical in CSV_TO_CANONICAL.items():
-        if canonical in active_lines:
-            alias_map[clean_key(csv_name)] = canonical
-
-    manual_aliases: Dict[str, str] = {
-        # Hα
-        "halpha": "Hα",
-        "ha": "Hα",
-        "6563": "Hα",
-        # Hβ
-        "hbeta": "Hβ",
-        "hb": "Hβ",
-        "4861": "Hβ",
-        # Hγ
-        "hgamma": "Hγ",
-        "hg": "Hγ",
-        "4340": "Hγ",
-        # [O III] 5007
-        "oiii": "[O III] 5007",
-        "oiii5007": "[O III] 5007",
-        "oiii4959": "[O III] 5007",
-        "oiii49595007": "[O III] 5007",
-        "5007": "[O III] 5007",
-        "4959": "[O III] 5007",
-        # [O II] 3727
-        "oii": "[O II] 3727",
-        "oii3727": "[O II] 3727",
-        "oii3726": "[O II] 3727",
-        "oii3729": "[O II] 3727",
-        "3727": "[O II] 3727",
-        "3726": "[O II] 3727",
-        "3729": "[O II] 3727",
-        # [N II] 6583
-        "nii": "[N II] 6583",
-        "nii6583": "[N II] 6583",
-        "nii6584": "[N II] 6583",
-        "nii6548": "[N II] 6583",
-        "6584": "[N II] 6583",
-        "6548": "[N II] 6583",
-        # [S II] 6720
-        "sii": "[S II] 6720",
-        "sii6720": "[S II] 6720",
-        "sii6716": "[S II] 6720",
-        "sii6731": "[S II] 6720",
-        "6716": "[S II] 6720",
-        "6731": "[S II] 6720",
-    }
-
-    for k, v in manual_aliases.items():
-        if v in CANONICAL_LINES:
-            alias_map[clean_key(k)] = v
-
-    return alias_map
-
-
-CLEAN_TO_CANONICAL = _build_alias_map()
-
-
-class EmissionLineTask:
+class EmissionLineTask(Task):
     name: str = "emission_lines"
+    benchmark_name: str = "emission_lines"
 
-    def __init__(self, ground_truth_df: Optional[pd.DataFrame] = None, **kwargs):
+    def __init__(self, **kwargs: Any):
         self.canonical_lines = list(CANONICAL_LINES)
-        self._vocabulary_text = ", ".join(self.canonical_lines)
 
-        # Pre-load and group ground truth by wiki_entity_id
-        if ground_truth_df is None:
-            ground_truth_df = load_emission_line_ground_truth()
+    def _get_candidate_lines(self, item: Optional[Dict[str, Any]] = None) -> List[str]:
+        if item is not None and "candidate_query_lines" in item:
+            cand = item["candidate_query_lines"]
+            if cand is not None and len(cand) > 0:
+                return [str(k) for k in cand]
+        return list(self.canonical_lines)
 
-        self.ground_truth_by_id: Dict[str, Dict[str, float]] = {}
-        for _, row in ground_truth_df.iterrows():
-            eid = str(row["wiki_entity_id"])
-            raw_line = str(row["LINE_NAME"])
-            snr = float(row["SNR"])
-
-            if raw_line in CSV_TO_CANONICAL:
-                canonical = CSV_TO_CANONICAL[raw_line]
-                
-                # Only include this line if it's currently active
-                if canonical not in self.canonical_lines:
-                    continue
-                    
-                if eid not in self.ground_truth_by_id:
-                    self.ground_truth_by_id[eid] = {}
-                # If multiple lines map to same canonical (e.g. doublets/broad), take max SNR
-                if (
-                    canonical not in self.ground_truth_by_id[eid]
-                    or snr > self.ground_truth_by_id[eid][canonical]
-                ):
-                    self.ground_truth_by_id[eid][canonical] = snr
-
-    def build_prompt(
-        self, *, image_mode: bool, spectrum_text: Optional[str] = None
+    def build_frontier_prompt(
+        self, caption: str, item: Optional[Dict[str, Any]] = None
     ) -> str:
-        if image_mode:
-            intro = "Briefly analyze and describe the given spectrum shown in the image and then identify all visible emission lines present in it."
-        elif spectrum_text is not None:
-            intro = "Briefly analyze and describe the following spectrum data and then identify all visible emission lines present in it."
-        else:
-            intro = "Briefly analyze and describe the given spectrum and then identify all visible emission lines present in it."
-
-        parts = [
-            intro,
-            f"\n\nAllowed candidate lines:\n{self._vocabulary_text}\n",
-        ]
-
-        if spectrum_text is not None:
-            parts.append(f"\n{spectrum_text}\n")
-
-        parts.append(
-            "\nYou MUST conclude your response with the exact format:\n"
-            "EMISSION LINES: line1, line2, ...\n"
-            "If no emission lines from the list are present, write:\n"
-            "EMISSION LINES: NONE"
+        candidate_keys = self._get_candidate_lines(item)
+        items_text = "\n".join(
+            f"{string.ascii_uppercase[i]}: {k}" for i, k in enumerate(candidate_keys)
+        )
+        return render_prompt(
+            "caption_eval/emission_lines.jinja2",
+            candidate_lines=items_text,
+            caption=caption.strip(),
         )
 
-        return "".join(parts)
-
     def fallback_tag(self) -> str:
-        return "\n\nEMISSION LINES: "
+        return "\n\nFINAL ANSWER: "
 
-    def default_parse(self, raw_text: str) -> Optional[List[str]]:
-        if not raw_text or not raw_text.strip():
-            return None
+    def get_parse_fn(
+        self, item: Optional[Dict[str, Any]] = None
+    ) -> Callable[[str], Optional[List[str]]]:
+        candidate_lines = self._get_candidate_lines(item)
+        letter_to_line = {
+            string.ascii_uppercase[i]: line for i, line in enumerate(candidate_lines)
+        }
+        allowed_letters = set(letter_to_line.keys())
 
-        matches = re.findall(r"EMISSION LINES:\s*(.*)", raw_text, re.IGNORECASE)
-        if matches:
-            target_str = matches[-1].strip()
-        else:
-            return None
+        def parse(raw_text: str) -> Optional[List[str]]:
+            chosen_letters = parse_multi_choice(
+                raw_text, allowed_letters=allowed_letters
+            )
+            if chosen_letters is None:
+                return None
+            return [letter_to_line[l] for l in chosen_letters if l in letter_to_line]
 
-        if re.search(r"\bNONE\b", target_str, re.IGNORECASE) and not re.search(
-            r"[A-Za-z0-9]", target_str.replace("NONE", "").replace("none", "")
-        ):
-            return []
+        return parse
 
-        raw_tokens = re.split(r"[,;\n]+", target_str)
-        extracted = []
-        for raw_tok in raw_tokens:
-            # Strip leading bullet points (e.g. "- Halpha" or "* Hbeta")
-            tok = re.sub(r"^\s*[-*•]\s+", "", raw_tok).strip()
-            ck = clean_key(tok)
-            if not ck or ck == "none":
-                continue
-            if ck in CLEAN_TO_CANONICAL:
-                can_line = CLEAN_TO_CANONICAL[ck]
-                if can_line not in extracted:
-                    extracted.append(can_line)
-
-        # Search the target_str directly for known canonical lines and key aliases
-        if not extracted:
-            for clean_k, can_name in CLEAN_TO_CANONICAL.items():
-                if len(clean_k) >= 3 and clean_k in clean_key(target_str):
-                    if can_name not in extracted:
-                        extracted.append(can_name)
-
-        return extracted
+    def default_parse(
+        self, raw_text: str, item: Optional[Dict[str, Any]] = None, **kwargs: Any
+    ) -> Optional[List[str]]:
+        parse_fn = self.get_parse_fn(item)
+        return parse_fn(raw_text)
 
     def extract_ground_truth(self, item: Any) -> Dict[str, float]:
-        """Returns a dict of {canonical_line_name: max_snr} for the observation."""
-        if isinstance(item, str):
-            eid = item
-        elif isinstance(item, (dict, pd.Series)):
-            eid = str(item.get("wiki_entity_id", ""))
-        else:
-            raise ValueError(
-                f"Cannot extract ground truth wiki_entity_id from item of type {type(item)}"
-            )
-        return self.ground_truth_by_id.get(eid, {})
+        if item is None:
+            return {}
+
+        if isinstance(item, (dict, pd.Series)):
+            gt = item.get("ground_truth", item)
+            if isinstance(gt, dict):
+                det_lines = gt.get("detected_lines")
+                if det_lines is not None:
+                    details = gt.get("line_details", {})
+                    gt_dict: Dict[str, float] = {}
+                    for line in det_lines:
+                        line_str = str(line)
+                        snr = 1.0
+                        if isinstance(details, dict) and line_str in details:
+                            d = details[line_str]
+                            if isinstance(d, dict) and d.get("snr") is not None:
+                                snr = float(d["snr"])
+                        gt_dict[line_str] = snr
+                    return gt_dict
+                return {
+                    str(k): float(v)
+                    for k, v in gt.items()
+                    if isinstance(v, (int, float))
+                }
+            if isinstance(gt, (list, set)):
+                return {str(l): 1.0 for l in gt}
+
+        if isinstance(item, (list, set)):
+            return {str(l): 1.0 for l in item}
+
+        return {}
 
     def get_config(self) -> Dict[str, Any]:
         return {
             "task_name": self.name,
+            "benchmark_name": self.benchmark_name,
             "num_canonical_lines": len(self.canonical_lines),
             "canonical_lines": self.canonical_lines,
         }

@@ -1,5 +1,0 @@
-name: caption_distance
-batch_size: 32
-kwargs:
-  scheme: 3-group
-
