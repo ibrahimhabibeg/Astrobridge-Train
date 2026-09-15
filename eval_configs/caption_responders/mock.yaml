@@ -1,4 +1,0 @@
-responder_type: mock
-model_id: mock-astronomy-captioner
-caption_prompt_template: caption_generation/default.jinja2
-

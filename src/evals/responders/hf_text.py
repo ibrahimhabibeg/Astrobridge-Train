@@ -1,28 +1,28 @@
-"""Generic HuggingFace text-only responder.
+from __future__ import annotations
 
-Works with any HF causal language model (e.g. Llama, Mistral, Gemma, Phi, etc.).
-Uses AutoModelForCausalLM + AutoTokenizer instead of a model-specific class.
-The spectrum is passed as subsampled text, identical to BaseQwenTextResponder.
-"""
+from typing import Any, Dict, List, Optional
 
-import numpy as np
 import torch
-from typing import List, Any
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from . import EvalSample, ModelResponse
-from .fallback import identify_failed_indices, merge_fallback_responses
-from .utils import subsample_spectrum, format_spectrum_text
+from .base import (
+    BaseResponder,
+    GeneratedCaption,
+    resolve_caption_prompt,
+)
+from .sample import SpectrumSample
+from .utils import subsample_spectrum, format_spectrum_text, clean_and_extract_caption
 
 
-class HFTextResponder:
+class HFTextResponder(BaseResponder):
     def __init__(self, config: dict, device: str):
         assert "hf_model_id" in config and config["hf_model_id"], "Missing 'hf_model_id' in config"
         self._model_id = config["hf_model_id"]
-        self._max_tokens = config.get("max_tokens", 2048)
-        self._fallback_max_tokens = config.get("fallback_max_tokens", 128)
+        self.caption_prompt = resolve_caption_prompt(config, "caption_generation/text_baseline.jinja2")
         self._num_points = config.get("num_points", 100)
+        self._max_tokens = config.get("max_tokens", 256)
         self._device = device
+
         self._tokenizer = AutoTokenizer.from_pretrained(self._model_id, trust_remote_code=True)
         self._model = AutoModelForCausalLM.from_pretrained(
             self._model_id,
@@ -32,23 +32,30 @@ class HFTextResponder:
         )
         self._model.eval()
 
-    def get_config(self) -> dict:
+    def get_config(self) -> Dict[str, Any]:
         return {
             "type": "HFTextResponder",
             "model_id": self._model_id,
             "num_points": self._num_points,
+            "caption_prompt": self.caption_prompt,
+            "max_tokens": self._max_tokens,
         }
 
-    def respond_batch(self, samples: List[EvalSample], task: Any) -> List[ModelResponse]:
-        messages_batch = []
+    def generate_captions(
+        self,
+        samples: List[SpectrumSample],
+        prompt_override: Optional[str] = None,
+    ) -> List[GeneratedCaption]:
+        prompt = prompt_override or self.caption_prompt
 
+        messages_batch = []
         for sample in samples:
             w_str, f_str = subsample_spectrum(sample.wavelength, sample.flux, num_points=self._num_points)
             spectrum_text = format_spectrum_text(w_str, f_str, self._num_points)
-            prompt = task.build_prompt(image_mode=False, spectrum_text=spectrum_text)
+            full_prompt = f"{prompt}\n\n{spectrum_text}"
 
             messages = [
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": full_prompt},
             ]
             messages_batch.append(messages)
 
@@ -65,43 +72,31 @@ class HFTextResponder:
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            output_ids = self._model.generate(**inputs, max_new_tokens=self._max_tokens, do_sample=False)
+            output_ids = self._model.generate(
+                **inputs,
+                max_new_tokens=self._max_tokens,
+                do_sample=False,
+            )
 
         input_len = inputs["input_ids"].shape[1]
         generated_ids = output_ids[:, input_len:]
         raw_responses = self._tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 
-        parsed_results = [task.default_parse(r) for r in raw_responses]
-
-        responses = [
-            ModelResponse(
-                parsed=p if p is not None else [],
-                raw_text=raw_responses[i],
-                forced_fallback=False,
-            )
-            for i, p in enumerate(parsed_results)
-        ]
-
-        # Fallback pass
-        fallback_tag = task.fallback_tag()
-        failed = identify_failed_indices(responses)
-
-        if failed and fallback_tag:
-            fallback_texts = [texts[i] + raw_responses[i] + fallback_tag for i in failed]
-
-            fb_inputs = self._tokenizer(fallback_texts, return_tensors="pt", padding=True)
-            fb_inputs = {k: v.to(self._device) for k, v in fb_inputs.items()}
-
-            with torch.no_grad():
-                fb_output_ids = self._model.generate(
-                    **fb_inputs, max_new_tokens=self._fallback_max_tokens, do_sample=False
+        captions = []
+        for sample, raw in zip(samples, raw_responses):
+            cleaned = clean_and_extract_caption(raw)
+            captions.append(
+                GeneratedCaption(
+                    sample_id=sample.sample_id,
+                    caption=cleaned if cleaned else raw.strip(),
+                    responder_type="hf_text",
+                    model_id=self._model_id,
+                    caption_prompt=prompt,
+                    survey=sample.survey,
+                    metadata={"raw_output": raw},
                 )
+            )
+        return captions
 
-            fb_input_len = fb_inputs["input_ids"].shape[1]
-            fb_generated = fb_output_ids[:, fb_input_len:]
-            fb_raw = self._tokenizer.batch_decode(fb_generated, skip_special_tokens=True)
 
-            merge_fallback_responses(responses, failed, fb_raw, fallback_tag, task)
-
-        return responses
-
+HFTextCaptionResponder = HFTextResponder

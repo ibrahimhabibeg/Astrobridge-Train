@@ -1,61 +1,48 @@
+from __future__ import annotations
+
 import re
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Set
 import pandas as pd
 
-from ..data import load_benchmark_dataset
 from ..prompts import render_prompt
+from .base import Task
 
 CANONICAL_LINES: List[str] = [
-    # "Lyα",
-    # "O I 1304",
-    # "[O II] 3727",
-    "Hγ",
-    # "[O III] 4363",
-    "Hβ",
-    # "[O III] 5007",
-    # "[N II] 6583",
-    "Hα",
-    # "[S II] 6720",
-    # "[O II] 7325",
+    "HALPHA",
+    "HBETA",
+    "HGAMMA",
+    "OIII_5007",
+    "OIII_4959",
+    "OII_3726",
+    "OII_3729",
+    "NII_6584",
+    "NII_6548",
+    "SII_6716",
+    "SII_6731",
+    "MGII_2796",
+    "MGII_2803",
+    "CIV_1549",
 ]
 
-# Mapping from CSV LINE_NAME to canonical line name
-CSV_TO_CANONICAL: Dict[str, str] = {
-    # [O II] 3727
-    "OII_3726": "[O II] 3727",
-    "OII_3729": "[O II] 3727",
-    # Hγ
-    "HGAMMA": "Hγ",
-    "HGAMMA_BROAD": "Hγ",
-    # Hβ
-    "HBETA": "Hβ",
-    "HBETA_BROAD": "Hβ",
-    # [O III] 5007
-    "OIII_4959": "[O III] 5007",
-    "OIII_5007": "[O III] 5007",
-    # [N II] 6583
-    "NII_6548": "[N II] 6583",
-    "NII_6584": "[N II] 6583",
-    # Hα
-    "HALPHA": "Hα",
-    "HALPHA_BROAD": "Hα",
-    # [S II] 6720
-    "SII_6716": "[S II] 6720",
-    "SII_6731": "[S II] 6720",
-}
-
-# Inactive line mappings (kept for reference, filtered out below)
-_INACTIVE_CSV_MAPPINGS: Dict[str, str] = {
-    "LYALPHA": "Lyα",
-    "OI_1304": "O I 1304",
-    "OIII_4363": "[O III] 4363",
-    "OII_7320": "[O II] 7325",
-    "OII_7330": "[O II] 7325",
+LINE_DISPLAY_NAMES: Dict[str, str] = {
+    "HALPHA": "Hα (6563 Å)",
+    "HBETA": "Hβ (4861 Å)",
+    "HGAMMA": "Hγ (4340 Å)",
+    "OIII_5007": "[O III] 5007 Å",
+    "OIII_4959": "[O III] 4959 Å",
+    "OII_3726": "[O II] 3726 Å",
+    "OII_3729": "[O II] 3729 Å",
+    "NII_6584": "[N II] 6584 Å",
+    "NII_6548": "[N II] 6548 Å",
+    "SII_6716": "[S II] 6716 Å",
+    "SII_6731": "[S II] 6731 Å",
+    "MGII_2796": "Mg II 2796 Å",
+    "MGII_2803": "Mg II 2803 Å",
+    "CIV_1549": "C IV 1549 Å",
 }
 
 
 def clean_key(s: str) -> str:
-    """Normalize line name string for robust alias matching."""
     s = s.strip().lower()
     s = (
         s.replace("α", "alpha")
@@ -63,141 +50,153 @@ def clean_key(s: str) -> str:
         .replace("γ", "gamma")
         .replace("δ", "delta")
     )
-    for ch in "[](){}*-_,;:. \t\n/\\":
-        s = s.replace(ch, "")
-    return s
+    return re.sub(r"[^a-z0-9]", "", s)
 
 
-def _build_alias_map() -> Dict[str, str]:
-    alias_map: Dict[str, str] = {}
-    active_lines = set(CANONICAL_LINES)
+_DIRECT_ALIASES: Dict[str, str] = {
+    "halpha": "HALPHA",
+    "ha": "HALPHA",
+    "6563": "HALPHA",
+    "balmeralpha": "HALPHA",
+    "halpha6563": "HALPHA",
+    "hbeta": "HBETA",
+    "hb": "HBETA",
+    "4861": "HBETA",
+    "balmerbeta": "HBETA",
+    "hbeta4861": "HBETA",
+    "hgamma": "HGAMMA",
+    "hg": "HGAMMA",
+    "4340": "HGAMMA",
+    "balmergamma": "HGAMMA",
+    "hgamma4340": "HGAMMA",
+    "oiii5007": "OIII_5007",
+    "o35007": "OIII_5007",
+    "5007": "OIII_5007",
+    "oiii4959": "OIII_4959",
+    "o34959": "OIII_4959",
+    "4959": "OIII_4959",
+    "oii3726": "OII_3726",
+    "o23726": "OII_3726",
+    "3726": "OII_3726",
+    "oii3729": "OII_3729",
+    "o23729": "OII_3729",
+    "3729": "OII_3729",
+    "nii6584": "NII_6584",
+    "n26584": "NII_6584",
+    "6584": "NII_6584",
+    "nii6583": "NII_6584",
+    "6583": "NII_6584",
+    "nii6548": "NII_6548",
+    "n26548": "NII_6548",
+    "6548": "NII_6548",
+    "sii6716": "SII_6716",
+    "s26716": "SII_6716",
+    "6716": "SII_6716",
+    "sii6731": "SII_6731",
+    "s26731": "SII_6731",
+    "6731": "SII_6731",
+    "mgii2796": "MGII_2796",
+    "mg22796": "MGII_2796",
+    "2796": "MGII_2796",
+    "mgii2803": "MGII_2803",
+    "mg22803": "MGII_2803",
+    "2803": "MGII_2803",
+    "civ1549": "CIV_1549",
+    "c41549": "CIV_1549",
+    "1549": "CIV_1549",
+    "civ": "CIV_1549",
+    "c4": "CIV_1549",
+}
 
-    for line in active_lines:
-        alias_map[clean_key(line)] = line
-
-    for csv_name, canonical in CSV_TO_CANONICAL.items():
-        if canonical in active_lines:
-            alias_map[clean_key(csv_name)] = canonical
-
-    manual_aliases: Dict[str, str] = {
-        # Hα
-        "halpha": "Hα",
-        "ha": "Hα",
-        "6563": "Hα",
-        # Hβ
-        "hbeta": "Hβ",
-        "hb": "Hβ",
-        "4861": "Hβ",
-        # Hγ
-        "hgamma": "Hγ",
-        "hg": "Hγ",
-        "4340": "Hγ",
-        # [O III] 5007
-        "oiii": "[O III] 5007",
-        "oiii5007": "[O III] 5007",
-        "oiii4959": "[O III] 5007",
-        "oiii49595007": "[O III] 5007",
-        "5007": "[O III] 5007",
-        "4959": "[O III] 5007",
-        # [O II] 3727
-        "oii": "[O II] 3727",
-        "oii3727": "[O II] 3727",
-        "oii3726": "[O II] 3727",
-        "oii3729": "[O II] 3727",
-        "3727": "[O II] 3727",
-        "3726": "[O II] 3727",
-        "3729": "[O II] 3727",
-        # [N II] 6583
-        "nii": "[N II] 6583",
-        "nii6583": "[N II] 6583",
-        "nii6584": "[N II] 6583",
-        "nii6548": "[N II] 6583",
-        "6584": "[N II] 6583",
-        "6548": "[N II] 6583",
-        # [S II] 6720
-        "sii": "[S II] 6720",
-        "sii6720": "[S II] 6720",
-        "sii6716": "[S II] 6720",
-        "sii6731": "[S II] 6720",
-        "6716": "[S II] 6720",
-        "6731": "[S II] 6720",
-    }
-
-    for k, v in manual_aliases.items():
-        if v in CANONICAL_LINES:
-            alias_map[clean_key(k)] = v
-
-    return alias_map
+for line in CANONICAL_LINES:
+    _DIRECT_ALIASES[clean_key(line)] = line
+    _DIRECT_ALIASES[clean_key(LINE_DISPLAY_NAMES[line])] = line
 
 
-CLEAN_TO_CANONICAL = _build_alias_map()
+def _resolve_ambiguous_line(token_clean: str, candidate_set: Optional[Set[str]]) -> List[str]:
+    resolved: List[str] = []
+
+    if token_clean in ("oiii", "o3"):
+        if candidate_set:
+            if "OIII_5007" in candidate_set:
+                resolved.append("OIII_5007")
+            if "OIII_4959" in candidate_set:
+                resolved.append("OIII_4959")
+        if not resolved:
+            resolved.append("OIII_5007")
+
+    elif token_clean in ("oii", "o2", "3727", "oii3727"):
+        if candidate_set:
+            if "OII_3726" in candidate_set:
+                resolved.append("OII_3726")
+            if "OII_3729" in candidate_set:
+                resolved.append("OII_3729")
+        if not resolved:
+            resolved.extend(["OII_3726", "OII_3729"])
+
+    elif token_clean in ("nii", "n2"):
+        if candidate_set:
+            if "NII_6584" in candidate_set:
+                resolved.append("NII_6584")
+            if "NII_6548" in candidate_set:
+                resolved.append("NII_6548")
+        if not resolved:
+            resolved.append("NII_6584")
+
+    elif token_clean in ("sii", "s2", "6720", "sii6720"):
+        if candidate_set:
+            if "SII_6716" in candidate_set:
+                resolved.append("SII_6716")
+            if "SII_6731" in candidate_set:
+                resolved.append("SII_6731")
+        if not resolved:
+            resolved.extend(["SII_6716", "SII_6731"])
+
+    elif token_clean in ("mgii", "mg2", "2800", "mgii2800"):
+        if candidate_set:
+            if "MGII_2796" in candidate_set:
+                resolved.append("MGII_2796")
+            if "MGII_2803" in candidate_set:
+                resolved.append("MGII_2803")
+        if not resolved:
+            resolved.extend(["MGII_2796", "MGII_2803"])
+
+    return resolved
 
 
-class EmissionLineTask:
+class EmissionLineTask(Task):
     name: str = "emission_lines"
+    benchmark_name: str = "emission_lines"
 
-    def __init__(self, ground_truth_df: Optional[pd.DataFrame] = None, **kwargs):
+    def __init__(self, **kwargs):
         self.canonical_lines = list(CANONICAL_LINES)
-        self._vocabulary_text = ", ".join(self.canonical_lines)
+        self.line_display_names = dict(LINE_DISPLAY_NAMES)
 
-        # Pre-load and group ground truth by wiki_entity_id
-        if ground_truth_df is None:
-            ground_truth_df = load_benchmark_dataset("emission_lines")
-
-        self.ground_truth_by_id: Dict[str, Dict[str, float]] = {}
-        for _, row in ground_truth_df.iterrows():
-            eid = str(row["wiki_entity_id"])
-            raw_line = str(row["LINE_NAME"])
-            snr = float(row["SNR"])
-
-            if raw_line in CSV_TO_CANONICAL:
-                canonical = CSV_TO_CANONICAL[raw_line]
-                
-                # Only include this line if it's currently active
-                if canonical not in self.canonical_lines:
-                    continue
-                    
-                if eid not in self.ground_truth_by_id:
-                    self.ground_truth_by_id[eid] = {}
-                # If multiple lines map to same canonical (e.g. doublets/broad), take max SNR
-                if (
-                    canonical not in self.ground_truth_by_id[eid]
-                    or snr > self.ground_truth_by_id[eid][canonical]
-                ):
-                    self.ground_truth_by_id[eid][canonical] = snr
-
-    def build_prompt(
-        self, *, image_mode: bool = False, spectrum_text: Optional[str] = None
-    ) -> str:
-        if image_mode:
-            return render_prompt(
-                "direct_eval/emission_lines_image.jinja2",
-                candidate_lines=self._vocabulary_text,
-            )
-        elif spectrum_text is not None:
-            return render_prompt(
-                "direct_eval/emission_lines_text.jinja2",
-                candidate_lines=self._vocabulary_text,
-                spectrum_text=spectrum_text,
-            )
+    def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
+        if item is not None and "candidate_query_lines" in item:
+            candidate_keys = [str(k) for k in item["candidate_query_lines"]]
         else:
-            return render_prompt(
-                "direct_eval/emission_lines_default.jinja2",
-                candidate_lines=self._vocabulary_text,
-            )
+            candidate_keys = list(self.canonical_lines)
+
+        items_text = "\n".join(
+            f"- {self.line_display_names.get(k, k)} [{k}]" for k in candidate_keys
+        )
+        return render_prompt(
+            "caption_eval/emission_lines.jinja2",
+            candidate_lines=items_text,
+            caption=caption.strip(),
+        )
 
     def fallback_tag(self) -> str:
         return "\n\nEMISSION LINES: "
 
-    def default_parse(self, raw_text: str) -> Optional[List[str]]:
+    def default_parse(self, raw_text: str, candidate_lines: Optional[List[str]] = None) -> Optional[List[str]]:
         if not raw_text or not raw_text.strip():
             return None
 
+        cand_set = set(candidate_lines) if candidate_lines else None
         matches = re.findall(r"EMISSION LINES:\s*(.*)", raw_text, re.IGNORECASE)
-        if matches:
-            target_str = matches[-1].strip()
-        else:
-            return None
+        target_str = matches[-1].strip() if matches else raw_text.strip()
 
         if re.search(r"\bNONE\b", target_str, re.IGNORECASE) and not re.search(
             r"[A-Za-z0-9]", target_str.replace("NONE", "").replace("none", "")
@@ -205,42 +204,71 @@ class EmissionLineTask:
             return []
 
         raw_tokens = re.split(r"[,;\n]+", target_str)
-        extracted = []
+        extracted: List[str] = []
+
         for raw_tok in raw_tokens:
-            # Strip leading bullet points (e.g. "- Halpha" or "* Hbeta")
             tok = re.sub(r"^\s*[-*•]\s+", "", raw_tok).strip()
             ck = clean_key(tok)
             if not ck or ck == "none":
                 continue
-            if ck in CLEAN_TO_CANONICAL:
-                can_line = CLEAN_TO_CANONICAL[ck]
+
+            if ck in _DIRECT_ALIASES:
+                can_line = _DIRECT_ALIASES[ck]
                 if can_line not in extracted:
                     extracted.append(can_line)
+            else:
+                ambig = _resolve_ambiguous_line(ck, cand_set)
+                for line in ambig:
+                    if line not in extracted:
+                        extracted.append(line)
 
-        # Search the target_str directly for known canonical lines and key aliases
         if not extracted:
-            for clean_k, can_name in CLEAN_TO_CANONICAL.items():
-                if len(clean_k) >= 3 and clean_k in clean_key(target_str):
+            for ck, can_name in _DIRECT_ALIASES.items():
+                if len(ck) >= 4 and ck in clean_key(target_str):
                     if can_name not in extracted:
                         extracted.append(can_name)
+
+        if cand_set:
+            extracted = [l for l in extracted if l in cand_set]
 
         return extracted
 
     def extract_ground_truth(self, item: Any) -> Dict[str, float]:
-        """Returns a dict of {canonical_line_name: max_snr} for the observation."""
-        if isinstance(item, str):
-            eid = item
-        elif isinstance(item, (dict, pd.Series)):
-            eid = str(item.get("wiki_entity_id", ""))
-        else:
-            raise ValueError(
-                f"Cannot extract ground truth wiki_entity_id from item of type {type(item)}"
-            )
-        return self.ground_truth_by_id.get(eid, {})
+        if item is None:
+            return {}
+
+        if isinstance(item, (dict, pd.Series)):
+            gt = item.get("ground_truth", item)
+            if isinstance(gt, dict):
+                det_lines = gt.get("detected_lines")
+                if det_lines is not None:
+                    details = gt.get("line_details", {})
+                    gt_dict: Dict[str, float] = {}
+                    for line in det_lines:
+                        line_str = str(line)
+                        snr = 1.0
+                        if isinstance(details, dict) and line_str in details:
+                            d = details[line_str]
+                            if isinstance(d, dict) and d.get("snr") is not None:
+                                snr = float(d["snr"])
+                        gt_dict[line_str] = snr
+                    return gt_dict
+                return {str(k): float(v) for k, v in gt.items() if isinstance(v, (int, float))}
+            if isinstance(gt, (list, set)):
+                return {str(l): 1.0 for l in gt}
+
+        if isinstance(item, (list, set)):
+            return {str(l): 1.0 for l in item}
+
+        return {}
 
     def get_config(self) -> Dict[str, Any]:
         return {
             "task_name": self.name,
+            "benchmark_name": self.benchmark_name,
             "num_canonical_lines": len(self.canonical_lines),
             "canonical_lines": self.canonical_lines,
         }
+
+
+CaptionEmissionLineTask = EmissionLineTask

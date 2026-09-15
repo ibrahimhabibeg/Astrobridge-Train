@@ -12,8 +12,6 @@ from .base import FrontierModel, FrontierResponse
 
 
 class GeminiFrontierModel(FrontierModel):
-    """Frontier model implementation wrapping Google Gemini via google-genai SDK."""
-
     def __init__(self, config: dict):
         self._model_name = config.get("gemini_model", "gemini-2.5-flash")
         self._num_workers = config.get("gemini_num_workers", config.get("num_workers", 8))
@@ -53,7 +51,6 @@ class GeminiFrontierModel(FrontierModel):
         fallback_tag: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> FrontierResponse:
-        """Query Gemini with chat session for fallback support."""
         gen_config = types.GenerateContentConfig(
             max_output_tokens=self._max_tokens,
             temperature=self._temperature,
@@ -73,7 +70,6 @@ class GeminiFrontierModel(FrontierModel):
         parsed = parse_fn(raw_text)
         forced_fallback = False
 
-        # If parsing returned None or UNKNOWN, and fallback_tag is provided, attempt chat retry
         if (parsed is None or parsed == "UNKNOWN" or parsed == []) and fallback_tag and chat:
             try:
                 forced_fallback = True
@@ -108,7 +104,6 @@ class GeminiFrontierModel(FrontierModel):
         fallback_tag: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> List[FrontierResponse]:
-        """Query Gemini in parallel using ThreadPoolExecutor."""
         responses: List[Optional[FrontierResponse]] = [None] * len(prompts)
 
         def worker(idx: int, p: str):
@@ -129,4 +124,3 @@ class GeminiFrontierModel(FrontierModel):
                 responses[idx] = resp
 
         return [r for r in responses if r is not None]
-

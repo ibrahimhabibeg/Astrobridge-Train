@@ -1,7 +1,0 @@
-responder_type: astrobridge
-astrobridge_id: UniverseTBD/astrobridge-model-v7
-caption_prompt_template: caption_generation/astrobridge.jinja2
-max_tokens: 512
-batch_size: 64
-gpu: A100-80GB
-

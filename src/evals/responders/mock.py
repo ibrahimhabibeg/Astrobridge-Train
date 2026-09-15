@@ -3,17 +3,14 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .base import (
-    BaseCaptionResponder,
-    CaptionSample,
+    BaseResponder,
     GeneratedCaption,
-    DEFAULT_SPECTRUM_CAPTION_PROMPT,
     resolve_caption_prompt,
 )
+from .sample import SpectrumSample
 
 
-class MockCaptionResponder(BaseCaptionResponder):
-    """Mock caption responder for fast offline testing and verification."""
-
+class MockCaptionResponder(BaseResponder):
     def __init__(self, config: Optional[dict] = None, device: str = "cpu"):
         self.config = config or {}
         self.caption_prompt = resolve_caption_prompt(self.config, "caption_generation/default.jinja2")
@@ -28,13 +25,14 @@ class MockCaptionResponder(BaseCaptionResponder):
 
     def generate_captions(
         self,
-        samples: List[CaptionSample],
+        samples: List[SpectrumSample],
         prompt_override: Optional[str] = None,
     ) -> List[GeneratedCaption]:
         prompt = prompt_override or self.caption_prompt
+        custom_caption = self.config.get("mock_caption")
         captions = []
         for s in samples:
-            text = (
+            text = custom_caption or (
                 f"Synthetic astronomical spectrum description for {s.sample_id}. "
                 "The spectrum exhibits a moderately flat continuum with strong broad Hα and Hβ emission lines, "
                 "consistent with an active galactic nucleus at redshift z ~ 0.15."
@@ -50,4 +48,3 @@ class MockCaptionResponder(BaseCaptionResponder):
                 )
             )
         return captions
-

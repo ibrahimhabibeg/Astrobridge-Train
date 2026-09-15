@@ -1,10 +1,9 @@
-name: caption_subclass
-benchmark: subclass
+name: subclass
 batch_size: 32
 kwargs:
-  target_column: subclass
   active_classes:
     AGN: AGN
     STARBURST: Starburst
     STARFORMING: Starforming
     BROADLINE: Broadline
+

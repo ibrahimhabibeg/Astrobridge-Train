@@ -1,6 +1,0 @@
-responder_type: hf_vision
-hf_model_id: Qwen/Qwen3.5-9B
-caption_prompt_template: caption_generation/vision_baseline.jinja2
-max_tokens: 256
-gpu: A100-80GB
-batch_size: 128

@@ -17,8 +17,6 @@ from .config import (
 
 @dataclass(frozen=True)
 class BenchmarkSpec:
-    """Specification and schema contract for an evaluation benchmark dataset."""
-
     name: str
     filename: str
     hf_subpath: str
@@ -65,44 +63,30 @@ class BenchmarkDataManager:
         cache_dir: Optional[Union[str, Path]] = None,
         repo_id: Optional[str] = None,
     ):
-        self.cache_dir = (
-            Path(cache_dir).resolve() if cache_dir else get_default_cache_dir()
-        )
+        self.cache_dir = Path(cache_dir).resolve() if cache_dir else get_default_cache_dir()
         self.repo_id = repo_id or get_hf_data_repo()
         self._df_cache: Dict[str, pd.DataFrame] = {}
         self._all_spectra_cache: Optional[pd.DataFrame] = None
         os.makedirs(self.cache_dir, exist_ok=True)
 
     def resolve_spec(self, benchmark_name: str) -> BenchmarkSpec:
-        """Resolve a canonical benchmark identifier into its BenchmarkSpec."""
         key = str(benchmark_name).strip().lower()
         if key in _BENCHMARK_SPECS:
             return _BENCHMARK_SPECS[key]
-
         valid_names = sorted(_BENCHMARK_SPECS.keys())
-        raise ValueError(
-            f"Unknown benchmark '{benchmark_name}'. Valid benchmarks: {valid_names}"
-        )
+        raise ValueError(f"Unknown benchmark '{benchmark_name}'. Valid benchmarks: {valid_names}")
 
     def get_local_path(self, spec: BenchmarkSpec) -> Path:
-        """Return the expected local path for a benchmark file."""
         return self.cache_dir / spec.filename
 
     def is_cached_locally(self, spec: BenchmarkSpec) -> bool:
-        """Check if the benchmark file exists in the canonical local cache."""
         return self.get_local_path(spec).is_file()
 
-    def download_benchmark_file(
-        self, spec: BenchmarkSpec, force_download: bool = False
-    ) -> Path:
-        """Download a benchmark file from Hugging Face into the local cache directory."""
+    def download_benchmark_file(self, spec: BenchmarkSpec, force_download: bool = False) -> Path:
         local_path = self.get_local_path(spec)
         if local_path.is_file() and not force_download:
             return local_path
 
-        print(
-            f"Fetching '{spec.filename}' from HF {self.repo_id} ({spec.hf_subpath}) -> {local_path}..."
-        )
         try:
             downloaded = hf_hub_download(
                 repo_id=self.repo_id,
@@ -119,144 +103,83 @@ class BenchmarkDataManager:
             ) from exc
 
     def ensure_benchmark_file(self, spec: BenchmarkSpec) -> Path:
-        """Ensure benchmark file is available locally, downloading from HF if needed."""
         return self.download_benchmark_file(spec)
 
     def ensure_all_files(self, force_download: bool = False) -> Dict[str, Path]:
-        """Ensure all canonical benchmark datasets are downloaded locally."""
         return {
-            spec.filename: self.download_benchmark_file(
-                spec, force_download=force_download
-            )
+            spec.filename: self.download_benchmark_file(spec, force_download=force_download)
             for spec in _BENCHMARK_SPECS.values()
         }
 
-    def _validate_and_normalize(
-        self, df: pd.DataFrame, spec: BenchmarkSpec
-    ) -> pd.DataFrame:
-        """Validate required columns and standardize identifier columns."""
-        # 1. Standardize primary sample ID
+    def _validate_and_normalize(self, df: pd.DataFrame, spec: BenchmarkSpec) -> pd.DataFrame:
         if "sample_id" in df.columns:
             df["sample_id"] = df["sample_id"].astype(str)
         elif "object_id" in df.columns:
             df["sample_id"] = df["object_id"].astype(str)
         else:
-            raise ValueError(
-                f"Dataset for benchmark '{spec.name}' is missing required identifier column ('sample_id' or 'object_id')."
-            )
+            raise ValueError(f"Dataset for benchmark '{spec.name}' missing identifier column ('sample_id' or 'object_id').")
 
-        # 2. Check survey (strictly required)
         if "survey" not in df.columns:
-            raise ValueError(
-                f"Dataset for benchmark '{spec.name}' is missing required 'survey' column."
-            )
-
-        # 3. Check spectrum column
+            raise ValueError(f"Dataset for benchmark '{spec.name}' missing required 'survey' column.")
         if "spectrum" not in df.columns:
-            raise ValueError(
-                f"Dataset for benchmark '{spec.name}' is missing the 'spectrum' column."
-            )
-
-        # 4. Check ground_truth column
+            raise ValueError(f"Dataset for benchmark '{spec.name}' missing 'spectrum' column.")
         if "ground_truth" not in df.columns:
-            raise ValueError(
-                f"Dataset for benchmark '{spec.name}' is missing the 'ground_truth' column."
-            )
+            raise ValueError(f"Dataset for benchmark '{spec.name}' missing 'ground_truth' column.")
 
-        # 5. Check expected ground truth keys
         if len(df) > 0 and isinstance(df["ground_truth"].iloc[0], dict):
             first_gt = df["ground_truth"].iloc[0]
             for key in spec.expected_ground_truth_keys:
                 if key not in first_gt:
-                    raise ValueError(
-                        f"Dataset for benchmark '{spec.name}' is missing expected ground truth key '{key}' in 'ground_truth' dictionary."
-                    )
+                    raise ValueError(f"Dataset for benchmark '{spec.name}' missing ground truth key '{key}'.")
 
         return df
 
-    def load_benchmark(
-        self, benchmark_name: str, force_reload: bool = False
-    ) -> pd.DataFrame:
-        """Load, cache, and validate a benchmark dataset by name or alias."""
+    def load_benchmark(self, benchmark_name: str, force_reload: bool = False) -> pd.DataFrame:
         spec = self.resolve_spec(benchmark_name)
-
         if not force_reload and spec.name in self._df_cache:
             return self._df_cache[spec.name].copy()
 
         local_path = self.ensure_benchmark_file(spec)
         df = pd.read_parquet(local_path)
         normalized_df = self._validate_and_normalize(df, spec)
-
         self._df_cache[spec.name] = normalized_df
-        print(f"Loaded benchmark '{spec.name}': {len(normalized_df)} samples.")
         return normalized_df.copy()
 
     def load_all_unique_spectra(self, force_reload: bool = False) -> pd.DataFrame:
-        """Load and deduplicate spectra across all 4 benchmark datasets.
-
-        Provides the 717 unique spectra evaluated across the benchmark suite,
-        ideal for pre-generating cached captions in a single pass.
-        """
         if not force_reload and self._all_spectra_cache is not None:
             return self._all_spectra_cache.copy()
 
         canonical_names = ["redshift", "source_class", "subclass", "emission_lines"]
         dfs: List[pd.DataFrame] = []
-
         for name in canonical_names:
             df = self.load_benchmark(name)
-            common_cols = [
-                c
-                for c in [
-                    "sample_id",
-                    "survey",
-                    "spectrum",
-                    "ra",
-                    "dec",
-                    "z",
-                ]
-                if c in df.columns
-            ]
+            common_cols = [c for c in ["sample_id", "survey", "spectrum", "ra", "dec", "z"] if c in df.columns]
             dfs.append(df[common_cols].copy())
 
         combined = pd.concat(dfs, ignore_index=True)
         dedup = combined.drop_duplicates(subset=["sample_id"]).reset_index(drop=True)
-        print(
-            f"Loaded all benchmark spectra: {len(dedup)} unique spectra across {canonical_names}."
-        )
-
         self._all_spectra_cache = dedup
         return dedup.copy()
 
     def list_available_benchmarks(self) -> List[str]:
-        """Return canonical benchmark identifiers."""
         return sorted(_BENCHMARK_SPECS.keys())
 
 
-# Singleton instance for simple module-level calls
 _GLOBAL_DATA_MANAGER: Optional[BenchmarkDataManager] = None
 
 
 def get_default_data_manager() -> BenchmarkDataManager:
-    """Return the global default BenchmarkDataManager instance."""
     global _GLOBAL_DATA_MANAGER
     if _GLOBAL_DATA_MANAGER is None:
         _GLOBAL_DATA_MANAGER = BenchmarkDataManager()
     return _GLOBAL_DATA_MANAGER
 
 
-# Public module-level API
 def load_benchmark_dataset(benchmark_name: str) -> pd.DataFrame:
-    """Load a benchmark dataset with spectra and ground truth.
-
-    Checks canonical local benchmark directory (<repo_root>/data/benchmarks),
-    downloading from Hugging Face if not cached locally.
-    """
     return get_default_data_manager().load_benchmark(benchmark_name)
 
 
 def load_all_benchmark_spectra() -> pd.DataFrame:
-    """Load and deduplicate spectra across all 4 benchmark datasets (717 unique spectra)."""
     return get_default_data_manager().load_all_unique_spectra()
 
 
@@ -265,7 +188,6 @@ def ensure_all_benchmark_files(
     repo_id: Optional[str] = None,
     force_download: bool = False,
 ) -> Dict[str, Path]:
-    """Ensure all canonical evaluation benchmark files are present in target_dir."""
     mgr = BenchmarkDataManager(cache_dir=target_dir, repo_id=repo_id)
     return mgr.ensure_all_files(force_download=force_download)
 

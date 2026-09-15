@@ -6,7 +6,7 @@ import pandas as pd
 
 from ..buckets import BucketScheme, get_bucket_scheme
 from ..prompts import render_prompt
-from .base import CaptionEvalTask
+from .base import Task
 
 BIN_TO_LABEL = {
     "<0.1": "A",
@@ -15,16 +15,12 @@ BIN_TO_LABEL = {
 }
 
 
-class CaptionDistanceTask(CaptionEvalTask):
-    """Evaluates the model's ability to describe distance/redshift features in spectra."""
-    name: str = "caption_distance"
+class DistanceTask(Task):
+    name: str = "distance"
     benchmark_name: str = "redshift"
 
     def __init__(self, scheme: Union[BucketScheme, str] = "3-group", **kwargs):
-        if isinstance(scheme, str):
-            self.scheme = get_bucket_scheme(scheme)
-        else:
-            self.scheme = scheme
+        self.scheme = get_bucket_scheme(scheme) if isinstance(scheme, str) else scheme
 
     def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
         return render_prompt(
@@ -36,42 +32,44 @@ class CaptionDistanceTask(CaptionEvalTask):
     def fallback_tag(self) -> str:
         return "\n\nFINAL ANSWER: "
 
-    def default_parse(self, raw_text: str) -> Optional[str]:
+    def default_parse(self, raw_text: str, **kwargs: Any) -> Optional[str]:
         if not raw_text:
             return None
         labels_str = "".join(self.scheme.labels)
-        match = re.search(
-            r"FINAL ANSWER:\s*([" + labels_str + r"])", raw_text, re.IGNORECASE
-        )
+        match = re.search(r"FINAL ANSWER:\s*([" + labels_str + r"])", raw_text, re.IGNORECASE)
         if match:
             return match.group(1).upper()
-        return None
+        match = re.search(r"(?:answer is|category)\s*(?:is\s*)?[:\s]*([ " + labels_str + r"])", raw_text, re.IGNORECASE)
+        return match.group(1).upper() if match else None
 
     def extract_ground_truth(self, item: Any) -> str:
         if isinstance(item, (int, float)):
             return self.scheme.classify(float(item))
 
         if isinstance(item, (dict, pd.Series)):
-            gt_obj = item["ground_truth"] if "ground_truth" in item else item
-            if isinstance(gt_obj, dict):
-                if "redshift_bin" in gt_obj and str(gt_obj["redshift_bin"]) in BIN_TO_LABEL:
-                    return BIN_TO_LABEL[str(gt_obj["redshift_bin"])]
-                if "z" in gt_obj:
-                    return self.scheme.classify(float(gt_obj["z"]))
-                if "Z" in gt_obj:
-                    return self.scheme.classify(float(gt_obj["Z"]))
+            gt = item.get("ground_truth", item)
+            if isinstance(gt, dict):
+                if "redshift_bin" in gt and str(gt["redshift_bin"]) in BIN_TO_LABEL:
+                    return BIN_TO_LABEL[str(gt["redshift_bin"])]
+                for k in ("z", "Z", "redshift"):
+                    if k in gt and gt[k] is not None:
+                        return self.scheme.classify(float(gt[k]))
 
             if "redshift_bin" in item and str(item["redshift_bin"]) in BIN_TO_LABEL:
                 return BIN_TO_LABEL[str(item["redshift_bin"])]
-            if "z" in item:
-                return self.scheme.classify(float(item["z"]))
-            if "Z" in item:
-                return self.scheme.classify(float(item["Z"]))
+            for k in ("z", "Z", "redshift"):
+                if k in item and item[k] is not None:
+                    return self.scheme.classify(float(item[k]))
 
-        raise ValueError(f"Cannot extract ground truth Z from item of type {type(item)}: {item}")
+        raise ValueError(f"Cannot extract ground truth redshift from: {item}")
 
     def get_config(self) -> Dict[str, Any]:
         return {
             "task_name": self.name,
+            "benchmark_name": self.benchmark_name,
             "bucket_scheme": self.scheme.get_config(),
         }
+
+
+CaptionDistanceTask = DistanceTask
+DistanceClassificationTask = DistanceTask

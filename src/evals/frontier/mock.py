@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import re
 from typing import Any, Callable, Dict, List, Optional
 
 from .base import FrontierModel, FrontierResponse
 
 
 class MockFrontierModel(FrontierModel):
-    """Mock frontier model for deterministic offline testing and CI."""
-
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         self.default_answer = self.config.get("mock_answer", "B")
@@ -30,9 +27,7 @@ class MockFrontierModel(FrontierModel):
     ) -> FrontierResponse:
         forced_fallback = False
 
-        # Detect task type from prompt context to give smart mock answers
         if "EMISSION LINES:" in prompt:
-            # Emission lines task
             if self.simulate_fallback:
                 raw_text = "I observe some spectral peaks."
                 parsed = parse_fn(raw_text)
@@ -44,15 +39,12 @@ class MockFrontierModel(FrontierModel):
                 raw_text = "Analysis shows strong lines.\nEMISSION LINES: Hα, Hβ"
                 parsed = parse_fn(raw_text)
         elif "Galaxy" in prompt or "Quasar" in prompt:
-            # Source classification task
-            raw_text = f"Based on the broad emission lines, this object is a Quasar.\nFINAL ANSWER: Quasar"
+            raw_text = "Based on the broad emission lines, this object is a Quasar.\nFINAL ANSWER: Quasar"
             parsed = parse_fn(raw_text)
         elif "Starburst" in prompt or "AGN" in prompt:
-            # Subclass classification task
-            raw_text = f"Based on the spectral features, this is AGN.\nFINAL ANSWER: AGN"
+            raw_text = "Based on the spectral features, this is AGN.\nFINAL ANSWER: AGN"
             parsed = parse_fn(raw_text)
         else:
-            # Distance classification task
             ans = self.default_answer
             if self.simulate_fallback:
                 raw_text = "The spectrum shows redshifted lines."
@@ -83,4 +75,3 @@ class MockFrontierModel(FrontierModel):
             self.predict(p, parse_fn, fallback_tag=fallback_tag, system_prompt=system_prompt)
             for p in prompts
         ]
-
