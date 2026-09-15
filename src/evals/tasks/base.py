@@ -22,6 +22,3 @@ class Task(Protocol):
     def get_config(self) -> Dict[str, Any]:
         ...
 
-
-CaptionEvalTask = Task
-

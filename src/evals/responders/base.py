@@ -43,6 +43,3 @@ class BaseResponder(Protocol):
     def get_config(self) -> Dict[str, Any]:
         ...
 
-
-BaseCaptionResponder = BaseResponder
-

@@ -37,6 +37,3 @@ class SpectrumSample:
             ivar=ivar,
         )
 
-
-CaptionSample = SpectrumSample
-

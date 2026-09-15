@@ -269,6 +269,3 @@ class EmissionLineTask(Task):
             "num_canonical_lines": len(self.canonical_lines),
             "canonical_lines": self.canonical_lines,
         }
-
-
-CaptionEmissionLineTask = EmissionLineTask

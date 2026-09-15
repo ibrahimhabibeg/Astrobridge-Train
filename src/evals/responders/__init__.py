@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .sample import SpectrumSample, CaptionSample
+from .sample import SpectrumSample
 from .mock import MockCaptionResponder
 from .base import (
     BaseResponder,
-    BaseCaptionResponder,
     GeneratedCaption,
     DEFAULT_SPECTRUM_CAPTION_PROMPT,
     resolve_caption_prompt,
@@ -34,17 +33,12 @@ def get_responder(config: Dict[str, Any], device: str) -> BaseResponder:
     return REGISTRY[responder_type](config, device)
 
 
-get_caption_responder = get_responder
-
 __all__ = [
     "SpectrumSample",
-    "CaptionSample",
     "BaseResponder",
-    "BaseCaptionResponder",
     "GeneratedCaption",
     "MockCaptionResponder",
     "DEFAULT_SPECTRUM_CAPTION_PROMPT",
     "resolve_caption_prompt",
     "get_responder",
-    "get_caption_responder",
 ]

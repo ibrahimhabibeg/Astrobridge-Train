@@ -6,9 +6,6 @@ from typing import Optional
 
 DEFAULT_HF_DATA_REPO: str = "UniverseTBD/AstroBridge-Data"
 DEFAULT_HF_EVALS_SUBDIR: str = "evals/spectra"
-DEFAULT_MODEL_REPO: str = "UniverseTBD/astrobridge-model-v7"
-DEFAULT_BASE_LLM_REPO: str = "Qwen/Qwen3.5-9B"
-
 
 def get_repo_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
