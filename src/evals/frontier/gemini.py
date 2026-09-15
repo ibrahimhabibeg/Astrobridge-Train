@@ -70,7 +70,7 @@ class GeminiFrontierModel(FrontierModel):
         parsed = parse_fn(raw_text)
         forced_fallback = False
 
-        if (parsed is None or parsed == "UNKNOWN" or parsed == []) and fallback_tag and chat:
+        if parsed is None and fallback_tag and chat:
             try:
                 forced_fallback = True
                 fallback_config = types.GenerateContentConfig(

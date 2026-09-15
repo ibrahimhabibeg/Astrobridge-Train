@@ -31,7 +31,7 @@ class MockFrontierModel(FrontierModel):
             if self.simulate_fallback:
                 raw_text = "I observe some spectral peaks."
                 parsed = parse_fn(raw_text)
-                if not parsed and fallback_tag:
+                if parsed is None and fallback_tag:
                     raw_text += f"{fallback_tag}A, B"
                     parsed = parse_fn(raw_text)
                     forced_fallback = True
