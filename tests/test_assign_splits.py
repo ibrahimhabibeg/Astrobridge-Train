@@ -120,3 +120,41 @@ def test_stratify_by_survey_keeps_each_survey_in_train():
     lc = out[out["survey"].isna()]
     assert 0.75 < (lc["split"] == "train").mean() < 0.85
     assert (lc["split"] == "test").sum() > 0
+
+
+def _multi_tier_manifest(n_per_tier: int = 100):
+    rows = []
+    for tier in ("spectra", "image", "lightcurve"):
+        for i in range(n_per_tier):
+            rows.append({"object_id": f"{tier}_{i}", "tier": tier, "split_upstream": None})
+    return pd.DataFrame(rows)
+
+
+def _cfg_with_tier_override(**overrides):
+    splits = {
+        "policy": "stratified", "honor_upstream": False, "val": 0.2, "test": 0.1, "seed": 0,
+        "tier_overrides": {"spectra": {"val": 0.2, "test": 0.0}},
+    }
+    splits.update(overrides)
+    return OmegaConf.create({"splits": splits, "sanity": {"min_joint_objects": 500}})
+
+
+def test_tier_override_gives_spectra_no_test_objects():
+    out = assign_splits(_multi_tier_manifest(), _cfg_with_tier_override())
+    spectra = out[out["tier"] == "spectra"]
+    assert (spectra["split"] != "test").all()
+    assert (spectra["split"] == "val").sum() == 20  # 20% of 100, the override's own val fraction
+
+
+def test_tier_override_leaves_other_tiers_on_the_global_fractions():
+    out = assign_splits(_multi_tier_manifest(), _cfg_with_tier_override())
+    for tier in ("image", "lightcurve"):
+        sub = out[out["tier"] == tier]
+        assert (sub["split"] == "val").sum() == 20   # global val=0.2
+        assert (sub["split"] == "test").sum() == 10  # global test=0.1
+
+
+def test_no_tier_overrides_configured_falls_back_to_global_fractions_everywhere():
+    out = assign_splits(_multi_tier_manifest(), _cfg_with_tier_override(tier_overrides={}))
+    spectra = out[out["tier"] == "spectra"]
+    assert (spectra["split"] == "test").sum() == 10  # global test=0.1, no override applied

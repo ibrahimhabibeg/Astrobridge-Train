@@ -11,6 +11,7 @@ Throwaway-looking scripts that are worth keeping: each one is the evidence behin
 | `cache_health.py [cache-root]` | Did the encoders emit distinguishable embeddings? Flags total collapse, and flags `centred-cos mean > 0.15` as SUSPECT — the signal that separated the broken spectra cache (+0.244) from the healthy ones (-0.015, +0.022). |
 | `caption_diversity.py <ckpt-dir> [lora-dir]` | **The gate that matters.** Generates captions for real test objects and reports distinct fraction + top-1 share, spectra split by DESI/SDSS. |
 | `spectra_probe.py [cache-root]` | Linear/MLP class probe on the spectra cache. 0.347 before the wavelength fix, 0.632 after (majority 0.334). |
+| `split_sanity.py [--manifest path]` | Does `outputs/manifest/manifest.parquet` actually match `configs/data.yaml`'s `splits` (incl. `tier_overrides`)? Checks the no-object-in-two-splits invariant independently from disk, and each tier's — and, for spectra, each survey's — real val/test fraction against what the config asked for. No network, reads the already-built manifest, so run it right before every training launch, not just once: it's the check that would catch a typo'd tier name or a fraction silently reverting. |
 
 ## One-off investigations, kept for reproducibility
 
