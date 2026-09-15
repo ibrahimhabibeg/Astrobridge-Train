@@ -27,7 +27,9 @@ class SourceTask(Task):
         self.categories = list(dict.fromkeys(self.active_classes.values()))
         self._options_text = ", ".join(self.categories)
 
-    def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
+    def build_frontier_prompt(
+        self, caption: str, item: Optional[Dict[str, Any]] = None
+    ) -> str:
         return render_prompt(
             "caption_eval/source_class.jinja2",
             options=self._options_text,
@@ -41,7 +43,9 @@ class SourceTask(Task):
         if not raw_text:
             return None
         labels_str = "|".join(re.escape(cat) for cat in self.categories)
-        match = re.search(r"FINAL ANSWER:\s*(" + labels_str + r")", raw_text, re.IGNORECASE)
+        match = re.search(
+            r"FINAL ANSWER:\s*(" + labels_str + r")", raw_text, re.IGNORECASE
+        )
         if match:
             matched_lower = match.group(1).lower()
             for cat in self.categories:
@@ -54,6 +58,9 @@ class SourceTask(Task):
             if re.search(r"\b" + re.escape(key) + r"\b", raw_text, re.IGNORECASE):
                 return cat
         return None
+
+    def get_parse_fn(self, item: Optional[Dict[str, Any]] = None) -> Any:
+        return self.default_parse
 
     def extract_ground_truth(self, item: Any) -> str:
         if isinstance(item, str):
@@ -73,7 +80,9 @@ class SourceTask(Task):
                         raw_class = item[c]
                         break
         else:
-            raise ValueError(f"Cannot extract ground truth from item of type {type(item)}")
+            raise ValueError(
+                f"Cannot extract ground truth from item of type {type(item)}"
+            )
 
         if raw_class in self.active_classes:
             return self.active_classes[raw_class]

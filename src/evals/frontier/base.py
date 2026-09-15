@@ -25,7 +25,7 @@ class FrontierModel(Protocol):
     def predict_batch(
         self,
         prompts: List[str],
-        parse_fn: Callable[[str], Any],
+        parse_fn: Callable[[str], Any] | List[Callable[[str], Any]],
         fallback_tag: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> List[FrontierResponse]:

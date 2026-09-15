@@ -45,14 +45,14 @@ class TestPromptTemplates(unittest.TestCase):
     def test_caption_eval_emission_lines_template(self):
         rendered = render_prompt(
             "caption_eval/emission_lines.jinja2",
-            candidate_lines="- Hα (6563 Å) [HALPHA]\n- [O III] 5007 Å [OIII_5007]",
+            candidate_lines="A: HALPHA\nB: OIII_5007",
             caption="Strong H-alpha and [O III] emission detected.",
         )
         self.assertIn("candidate checklist of emission lines", rendered)
-        self.assertIn("- Hα (6563 Å) [HALPHA]", rendered)
+        self.assertIn("A: HALPHA", rendered)
         self.assertIn("Strong H-alpha and [O III] emission detected.", rendered)
-        self.assertIn("EMISSION LINES: line1, line2, ...", rendered)
-        self.assertIn("EMISSION LINES: NONE", rendered)
+        self.assertIn("FINAL ANSWER: [Letter(s) separated by comma, e.g. A, B]", rendered)
+        self.assertIn("FINAL ANSWER: NONE", rendered)
 
     def test_task_frontier_prompts(self):
         dist_task = get_task("distance")

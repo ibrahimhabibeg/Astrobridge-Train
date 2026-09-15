@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Callable, Dict, Optional, Protocol
 
 
 class Task(Protocol):
@@ -16,9 +16,11 @@ class Task(Protocol):
     def default_parse(self, raw_text: str, **kwargs: Any) -> Any:
         ...
 
+    def get_parse_fn(self, item: Optional[Dict[str, Any]] = None) -> Callable[[str], Any]:
+        ...
+
     def extract_ground_truth(self, item: Any) -> Any:
         ...
 
     def get_config(self) -> Dict[str, Any]:
         ...
-

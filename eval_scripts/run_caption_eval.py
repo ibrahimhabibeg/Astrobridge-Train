@@ -84,10 +84,11 @@ def run_caption_evaluation(
         task.build_frontier_prompt(captions_by_id[sid]["caption"], item=rows_by_id[sid])
         for sid in eval_ids
     ]
+    parse_fns = [task.get_parse_fn(item=rows_by_id[sid]) for sid in eval_ids]
 
     frontier_responses = frontier.predict_batch(
         prompts=frontier_prompts,
-        parse_fn=task.default_parse,
+        parse_fn=parse_fns,
         fallback_tag=task.fallback_tag(),
     )
 

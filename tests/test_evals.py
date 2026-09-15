@@ -114,13 +114,15 @@ def test_emission_line_task():
         "Strong H-alpha and [O III] detected.",
         item={"candidate_query_lines": ["HALPHA", "OIII_5007", "HBETA"]},
     )
-    assert "HALPHA" in prompt
+    assert "A: HALPHA" in prompt
+    assert "B: OIII_5007" in prompt
+    assert "C: HBETA" in prompt
 
-    parsed = task.default_parse("EMISSION LINES: HALPHA, [O III] 5007")
-    assert "HALPHA" in parsed
-    assert "OIII_5007" in parsed
+    parse_fn = task.get_parse_fn(item={"candidate_query_lines": ["HALPHA", "OIII_5007", "HBETA"]})
+    parsed = parse_fn("FINAL ANSWER: A, B")
+    assert parsed == ["HALPHA", "OIII_5007"]
 
-    parsed_none = task.default_parse("EMISSION LINES: NONE")
+    parsed_none = parse_fn("FINAL ANSWER: NONE")
     assert parsed_none == []
 
 

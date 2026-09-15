@@ -100,14 +100,16 @@ class GeminiFrontierModel(FrontierModel):
     def predict_batch(
         self,
         prompts: List[str],
-        parse_fn: Callable[[str], Any],
+        parse_fn: Callable[[str], Any] | List[Callable[[str], Any]],
         fallback_tag: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> List[FrontierResponse]:
         responses: List[Optional[FrontierResponse]] = [None] * len(prompts)
+        is_fn_list = isinstance(parse_fn, list)
 
         def worker(idx: int, p: str):
-            return idx, self.predict(p, parse_fn, fallback_tag=fallback_tag, system_prompt=system_prompt)
+            fn = parse_fn[idx] if is_fn_list else parse_fn
+            return idx, self.predict(p, fn, fallback_tag=fallback_tag, system_prompt=system_prompt)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self._num_workers) as executor:
             future_to_idx = {

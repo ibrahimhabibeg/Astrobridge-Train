@@ -56,6 +56,9 @@ class SubclassTask(Task):
                 return cat
         return None
 
+    def get_parse_fn(self, item: Optional[Dict[str, Any]] = None) -> Any:
+        return self.default_parse
+
     def extract_ground_truth(self, item: Any) -> str:
         if isinstance(item, str):
             raw_class = item

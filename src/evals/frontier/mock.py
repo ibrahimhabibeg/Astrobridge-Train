@@ -27,16 +27,16 @@ class MockFrontierModel(FrontierModel):
     ) -> FrontierResponse:
         forced_fallback = False
 
-        if "EMISSION LINES:" in prompt:
+        if "emission lines" in prompt.lower() or "candidate lines" in prompt.lower():
             if self.simulate_fallback:
                 raw_text = "I observe some spectral peaks."
                 parsed = parse_fn(raw_text)
-                if parsed is None and fallback_tag:
-                    raw_text += f"{fallback_tag}Hα, Hβ"
+                if not parsed and fallback_tag:
+                    raw_text += f"{fallback_tag}A, B"
                     parsed = parse_fn(raw_text)
                     forced_fallback = True
             else:
-                raw_text = "Analysis shows strong lines.\nEMISSION LINES: Hα, Hβ"
+                raw_text = "Analysis shows strong lines.\nFINAL ANSWER: A, B"
                 parsed = parse_fn(raw_text)
         elif "Galaxy" in prompt or "Quasar" in prompt:
             raw_text = "Based on the broad emission lines, this object is a Quasar.\nFINAL ANSWER: Quasar"
@@ -67,11 +67,17 @@ class MockFrontierModel(FrontierModel):
     def predict_batch(
         self,
         prompts: List[str],
-        parse_fn: Callable[[str], Any],
+        parse_fn: Callable[[str], Any] | List[Callable[[str], Any]],
         fallback_tag: Optional[str] = None,
         system_prompt: Optional[str] = None,
     ) -> List[FrontierResponse]:
+        is_fn_list = isinstance(parse_fn, list)
         return [
-            self.predict(p, parse_fn, fallback_tag=fallback_tag, system_prompt=system_prompt)
-            for p in prompts
+            self.predict(
+                p,
+                parse_fn[i] if is_fn_list else parse_fn,
+                fallback_tag=fallback_tag,
+                system_prompt=system_prompt,
+            )
+            for i, p in enumerate(prompts)
         ]

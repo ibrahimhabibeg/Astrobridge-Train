@@ -96,6 +96,9 @@ class DistanceTask(Task):
         )
         return match.group(1).upper() if match else None
 
+    def get_parse_fn(self, item: Optional[Dict[str, Any]] = None) -> Any:
+        return self.default_parse
+
     def extract_ground_truth(self, item: Any) -> str:
         if isinstance(item, str):
             if item in self.label_to_letter:

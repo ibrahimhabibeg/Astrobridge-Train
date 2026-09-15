@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Set
+import string
+from typing import Any, Callable, Dict, List, Optional
 import pandas as pd
 
 from ..prompts import render_prompt
@@ -24,162 +25,27 @@ CANONICAL_LINES: List[str] = [
     "CIV_1549",
 ]
 
-LINE_DISPLAY_NAMES: Dict[str, str] = {
-    "HALPHA": "Hα (6563 Å)",
-    "HBETA": "Hβ (4861 Å)",
-    "HGAMMA": "Hγ (4340 Å)",
-    "OIII_5007": "[O III] 5007 Å",
-    "OIII_4959": "[O III] 4959 Å",
-    "OII_3726": "[O II] 3726 Å",
-    "OII_3729": "[O II] 3729 Å",
-    "NII_6584": "[N II] 6584 Å",
-    "NII_6548": "[N II] 6548 Å",
-    "SII_6716": "[S II] 6716 Å",
-    "SII_6731": "[S II] 6731 Å",
-    "MGII_2796": "Mg II 2796 Å",
-    "MGII_2803": "Mg II 2803 Å",
-    "CIV_1549": "C IV 1549 Å",
-}
-
-
-def clean_key(s: str) -> str:
-    s = s.strip().lower()
-    s = (
-        s.replace("α", "alpha")
-        .replace("β", "beta")
-        .replace("γ", "gamma")
-        .replace("δ", "delta")
-    )
-    return re.sub(r"[^a-z0-9]", "", s)
-
-
-_DIRECT_ALIASES: Dict[str, str] = {
-    "halpha": "HALPHA",
-    "ha": "HALPHA",
-    "6563": "HALPHA",
-    "balmeralpha": "HALPHA",
-    "halpha6563": "HALPHA",
-    "hbeta": "HBETA",
-    "hb": "HBETA",
-    "4861": "HBETA",
-    "balmerbeta": "HBETA",
-    "hbeta4861": "HBETA",
-    "hgamma": "HGAMMA",
-    "hg": "HGAMMA",
-    "4340": "HGAMMA",
-    "balmergamma": "HGAMMA",
-    "hgamma4340": "HGAMMA",
-    "oiii5007": "OIII_5007",
-    "o35007": "OIII_5007",
-    "5007": "OIII_5007",
-    "oiii4959": "OIII_4959",
-    "o34959": "OIII_4959",
-    "4959": "OIII_4959",
-    "oii3726": "OII_3726",
-    "o23726": "OII_3726",
-    "3726": "OII_3726",
-    "oii3729": "OII_3729",
-    "o23729": "OII_3729",
-    "3729": "OII_3729",
-    "nii6584": "NII_6584",
-    "n26584": "NII_6584",
-    "6584": "NII_6584",
-    "nii6583": "NII_6584",
-    "6583": "NII_6584",
-    "nii6548": "NII_6548",
-    "n26548": "NII_6548",
-    "6548": "NII_6548",
-    "sii6716": "SII_6716",
-    "s26716": "SII_6716",
-    "6716": "SII_6716",
-    "sii6731": "SII_6731",
-    "s26731": "SII_6731",
-    "6731": "SII_6731",
-    "mgii2796": "MGII_2796",
-    "mg22796": "MGII_2796",
-    "2796": "MGII_2796",
-    "mgii2803": "MGII_2803",
-    "mg22803": "MGII_2803",
-    "2803": "MGII_2803",
-    "civ1549": "CIV_1549",
-    "c41549": "CIV_1549",
-    "1549": "CIV_1549",
-    "civ": "CIV_1549",
-    "c4": "CIV_1549",
-}
-
-for line in CANONICAL_LINES:
-    _DIRECT_ALIASES[clean_key(line)] = line
-    _DIRECT_ALIASES[clean_key(LINE_DISPLAY_NAMES[line])] = line
-
-
-def _resolve_ambiguous_line(token_clean: str, candidate_set: Optional[Set[str]]) -> List[str]:
-    resolved: List[str] = []
-
-    if token_clean in ("oiii", "o3"):
-        if candidate_set:
-            if "OIII_5007" in candidate_set:
-                resolved.append("OIII_5007")
-            if "OIII_4959" in candidate_set:
-                resolved.append("OIII_4959")
-        if not resolved:
-            resolved.append("OIII_5007")
-
-    elif token_clean in ("oii", "o2", "3727", "oii3727"):
-        if candidate_set:
-            if "OII_3726" in candidate_set:
-                resolved.append("OII_3726")
-            if "OII_3729" in candidate_set:
-                resolved.append("OII_3729")
-        if not resolved:
-            resolved.extend(["OII_3726", "OII_3729"])
-
-    elif token_clean in ("nii", "n2"):
-        if candidate_set:
-            if "NII_6584" in candidate_set:
-                resolved.append("NII_6584")
-            if "NII_6548" in candidate_set:
-                resolved.append("NII_6548")
-        if not resolved:
-            resolved.append("NII_6584")
-
-    elif token_clean in ("sii", "s2", "6720", "sii6720"):
-        if candidate_set:
-            if "SII_6716" in candidate_set:
-                resolved.append("SII_6716")
-            if "SII_6731" in candidate_set:
-                resolved.append("SII_6731")
-        if not resolved:
-            resolved.extend(["SII_6716", "SII_6731"])
-
-    elif token_clean in ("mgii", "mg2", "2800", "mgii2800"):
-        if candidate_set:
-            if "MGII_2796" in candidate_set:
-                resolved.append("MGII_2796")
-            if "MGII_2803" in candidate_set:
-                resolved.append("MGII_2803")
-        if not resolved:
-            resolved.extend(["MGII_2796", "MGII_2803"])
-
-    return resolved
-
 
 class EmissionLineTask(Task):
     name: str = "emission_lines"
     benchmark_name: str = "emission_lines"
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         self.canonical_lines = list(CANONICAL_LINES)
-        self.line_display_names = dict(LINE_DISPLAY_NAMES)
 
-    def build_frontier_prompt(self, caption: str, item: Optional[Dict[str, Any]] = None) -> str:
+    def _get_candidate_lines(self, item: Optional[Dict[str, Any]] = None) -> List[str]:
         if item is not None and "candidate_query_lines" in item:
-            candidate_keys = [str(k) for k in item["candidate_query_lines"]]
-        else:
-            candidate_keys = list(self.canonical_lines)
+            cand = item["candidate_query_lines"]
+            if cand is not None and len(cand) > 0:
+                return [str(k) for k in cand]
+        return list(self.canonical_lines)
 
+    def build_frontier_prompt(
+        self, caption: str, item: Optional[Dict[str, Any]] = None
+    ) -> str:
+        candidate_keys = self._get_candidate_lines(item)
         items_text = "\n".join(
-            f"- {self.line_display_names.get(k, k)} [{k}]" for k in candidate_keys
+            f"{string.ascii_uppercase[i]}: {k}" for i, k in enumerate(candidate_keys)
         )
         return render_prompt(
             "caption_eval/emission_lines.jinja2",
@@ -188,50 +54,48 @@ class EmissionLineTask(Task):
         )
 
     def fallback_tag(self) -> str:
-        return "\n\nEMISSION LINES: "
+        return "\n\nFINAL ANSWER: "
 
-    def default_parse(self, raw_text: str, candidate_lines: Optional[List[str]] = None) -> Optional[List[str]]:
-        if not raw_text or not raw_text.strip():
-            return None
+    def get_parse_fn(
+        self, item: Optional[Dict[str, Any]] = None
+    ) -> Callable[[str], List[str]]:
+        candidate_lines = self._get_candidate_lines(item)
+        letter_to_line = {
+            string.ascii_uppercase[i]: line for i, line in enumerate(candidate_lines)
+        }
+        allowed_letters = set(letter_to_line.keys())
 
-        cand_set = set(candidate_lines) if candidate_lines else None
-        matches = re.findall(r"EMISSION LINES:\s*(.*)", raw_text, re.IGNORECASE)
-        target_str = matches[-1].strip() if matches else raw_text.strip()
+        def parse(raw_text: str) -> List[str]:
+            if not raw_text:
+                return []
+            match = re.search(r"FINAL ANSWER:\s*(.*)", raw_text, re.IGNORECASE)
+            target = match.group(1).strip() if match else raw_text.strip()
 
-        if re.search(r"\bNONE\b", target_str, re.IGNORECASE) and not re.search(
-            r"[A-Za-z0-9]", target_str.replace("NONE", "").replace("none", "")
-        ):
-            return []
+            if re.search(r"\bNONE\b", target, re.IGNORECASE):
+                other_letters = [
+                    ch
+                    for ch in re.findall(r"\b[A-Z]\b", target)
+                    if ch in allowed_letters
+                ]
+                if not other_letters:
+                    return []
 
-        raw_tokens = re.split(r"[,;\n]+", target_str)
-        extracted: List[str] = []
+            letters = re.findall(r"\b[A-Z]\b", target)
+            seen = set()
+            extracted = []
+            for l in letters:
+                if l in letter_to_line and l not in seen:
+                    seen.add(l)
+                    extracted.append(letter_to_line[l])
+            return extracted
 
-        for raw_tok in raw_tokens:
-            tok = re.sub(r"^\s*[-*•]\s+", "", raw_tok).strip()
-            ck = clean_key(tok)
-            if not ck or ck == "none":
-                continue
+        return parse
 
-            if ck in _DIRECT_ALIASES:
-                can_line = _DIRECT_ALIASES[ck]
-                if can_line not in extracted:
-                    extracted.append(can_line)
-            else:
-                ambig = _resolve_ambiguous_line(ck, cand_set)
-                for line in ambig:
-                    if line not in extracted:
-                        extracted.append(line)
-
-        if not extracted:
-            for ck, can_name in _DIRECT_ALIASES.items():
-                if len(ck) >= 4 and ck in clean_key(target_str):
-                    if can_name not in extracted:
-                        extracted.append(can_name)
-
-        if cand_set:
-            extracted = [l for l in extracted if l in cand_set]
-
-        return extracted
+    def default_parse(
+        self, raw_text: str, item: Optional[Dict[str, Any]] = None, **kwargs: Any
+    ) -> List[str]:
+        parse_fn = self.get_parse_fn(item)
+        return parse_fn(raw_text)
 
     def extract_ground_truth(self, item: Any) -> Dict[str, float]:
         if item is None:
@@ -253,7 +117,11 @@ class EmissionLineTask(Task):
                                 snr = float(d["snr"])
                         gt_dict[line_str] = snr
                     return gt_dict
-                return {str(k): float(v) for k, v in gt.items() if isinstance(v, (int, float))}
+                return {
+                    str(k): float(v)
+                    for k, v in gt.items()
+                    if isinstance(v, (int, float))
+                }
             if isinstance(gt, (list, set)):
                 return {str(l): 1.0 for l in gt}
 
