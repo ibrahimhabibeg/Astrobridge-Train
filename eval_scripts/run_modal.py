@@ -24,11 +24,20 @@ def download_qwen() -> None:
     snapshot_download(repo_id=model_id, token=token)
 
 
+ENV_FILE = REPO_ROOT / ".env"
+eval_secrets: list[modal.Secret] = []
+if ENV_FILE.is_file():
+    eval_secrets.append(modal.Secret.from_dotenv(path=ENV_FILE))
+else:
+    hf_tokens = {k: os.environ[k] for k in ("HF_TOKEN", "HUGGINGFACE_TOKEN") if k in os.environ}
+    if hf_tokens:
+        eval_secrets.append(modal.Secret.from_dict(hf_tokens))
+
 eval_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     .pip_install_from_pyproject(str(REPO_ROOT / "pyproject.toml"))
-    .run_function(download_qwen)
+    .run_function(download_qwen, secrets=eval_secrets)
     .add_local_dir(str(REPO_ROOT / "src"), remote_path="/root/astrobridge-eval/src")
     .add_local_dir(str(REPO_ROOT / "configs"), remote_path="/root/astrobridge-eval/configs")
     .add_local_dir(str(REPO_ROOT / "eval_configs"), remote_path="/root/astrobridge-eval/eval_configs")
@@ -45,6 +54,7 @@ MODAL_GPU = os.environ.get("MODAL_GPU", "A100-80GB")
     image=eval_image,
     gpu=MODAL_GPU,
     timeout=86400,
+    secrets=eval_secrets,
 )
 def run_command_remote(
     script: str, args: str, output_path: str | None = None
@@ -58,9 +68,12 @@ def run_command_remote(
     subprocess.run(cmd, cwd=workdir, env=env, check=True)
 
     if output_path:
-        target = Path(workdir) / output_path
+        target = Path(output_path)
+        if not target.is_absolute():
+            target = Path(workdir) / target
+
         if target.is_file():
-            print(f"Reading output file {target} to download locally...")
+            print(f"Reading output file {target} ({target.stat().st_size} bytes) to download locally...")
             return target.read_bytes()
         elif target.is_dir():
             print(f"Archiving output directory {target} to download locally...")
@@ -71,6 +84,8 @@ def run_command_remote(
             with tarfile.open(fileobj=buf, mode="w:gz") as tar:
                 tar.add(str(target), arcname=target.name)
             return buf.getvalue()
+        else:
+            raise FileNotFoundError(f"Expected remote output not found at: {target}")
     return None
 
 
@@ -79,39 +94,45 @@ def main(
     script: str = "eval_scripts/generate_captions.py",
     args: str = "--responder eval_configs/responders/astrobridge.yaml --output eval_results/cached_captions/astrobridge_captions.jsonl --benchmark all",
     output: str | None = None,
+    remote_output: str | None = None,
 ) -> None:
-    target_output = output
-    if not target_output:
+    if remote_output:
+        target_remote = remote_output
+    else:
         import argparse
 
         parser = argparse.ArgumentParser()
         parser.add_argument("--output", type=str, default=None)
         parser.add_argument("--output-dir", type=str, default=None)
         parsed, _ = parser.parse_known_args(shlex.split(args))
-        target_output = parsed.output or parsed.output_dir
+        target_remote = parsed.output or parsed.output_dir
+
+    if not target_remote:
+        raise ValueError("Cannot determine remote output path from arguments.")
+
+    target_local = output or target_remote
 
     print(f"Dispatching script '{script}' to Modal with args: {args}")
+    print(f"Remote output: '{target_remote}' -> Local destination: '{target_local}'")
     result_bytes = run_command_remote.remote(
-        script=script, args=args, output_path=target_output
+        script=script, args=args, output_path=target_remote
     )
 
-    if result_bytes and target_output:
-        dest = Path(target_output)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if result_bytes[:2] == b"\x1f\x8b":  # gzip compressed archive
-            import io
-            import tarfile
-
-            try:
-                with tarfile.open(fileobj=io.BytesIO(result_bytes), mode="r:gz") as tar:
-                    tar.extractall(dest.parent)
-                print(
-                    f"Successfully downloaded and extracted output directory to {dest}"
-                )
-                return
-            except Exception:
-                pass
-        dest.write_bytes(result_bytes)
-        print(
-            f"Successfully downloaded output file to {dest} ({len(result_bytes)} bytes)"
+    if not result_bytes:
+        raise RuntimeError(
+            f"Modal execution finished, but returned no data for remote output '{target_remote}'"
         )
+
+    dest = Path(target_local)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if result_bytes[:2] == b"\x1f\x8b":  # gzip compressed archive
+        import io
+        import tarfile
+
+        with tarfile.open(fileobj=io.BytesIO(result_bytes), mode="r:gz") as tar:
+            tar.extractall(dest.parent)
+        print(f"Successfully downloaded and extracted output directory to {dest}")
+        return
+
+    dest.write_bytes(result_bytes)
+    print(f"Successfully downloaded output file to {dest} ({len(result_bytes)} bytes)")

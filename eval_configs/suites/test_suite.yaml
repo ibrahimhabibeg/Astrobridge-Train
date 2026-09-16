@@ -1,0 +1,29 @@
+suite_name: test_suite
+description: "Quick test suite"
+benchmark: all
+
+hf_repo: ibrahimhabibeg/spectra_captions_dataset
+hf_subdir: test_evals/captions
+
+models:
+  - id: qwen_3.5_9b_text
+    responder_type: hf_text
+    name: "Qwen-3.5-9B-Text"
+    hf_model_id: Qwen/Qwen3.5-9B
+    modal_gpu: "A10G:2"
+    batch_size: 4
+
+  - id: qwen_3.5_9b_vision
+    responder_type: hf_vision
+    name: "Qwen-3.5-9B-Vision-Plot"
+    hf_model_id: Qwen/Qwen3.5-9B
+    modal_gpu: "A10G:2"
+    batch_size: 4
+
+  - id: astrobridge
+    responder_type: astrobridge
+    name: "AstroBridge-v7"
+    astrobridge_id: UniverseTBD/astrobridge-model-v7
+    modal_gpu: "A10G:2"
+    batch_size: 4
+

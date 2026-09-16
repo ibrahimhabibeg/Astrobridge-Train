@@ -321,12 +321,27 @@ def main() -> None:
         help="Comma-separated devices to use (e.g. '0,1', 'cuda:0,cuda:1', or 'all').",
     )
     parser.add_argument("--num-gpus", type=int, default=None, help="Number of GPUs to use (cuda:0..cuda:N-1).")
+    parser.add_argument(
+        "--model-id",
+        type=str,
+        default=None,
+        help="Override model checkpoint (hf_model_id for HF responders, or astrobridge_id for AstroBridge).",
+    )
+    parser.add_argument("--push-to-hf", action="store_true", help="Upload resulting captions.jsonl to Hugging Face Hub.")
+    parser.add_argument("--hf-repo", type=str, default=None, help="Hugging Face repo ID (default: UniverseTBD/AstroBridge-Data).")
+    parser.add_argument("--hf-path", type=str, default=None, help="Target path in HF repo (default: evals/captions/<filename>).")
     args = parser.parse_args()
 
     dotenv.load_dotenv()
 
     with open(args.responder, "r") as f:
         responder_config = yaml.safe_load(f)
+
+    if args.model_id:
+        if responder_config.get("responder_type") == "astrobridge":
+            responder_config["astrobridge_id"] = args.model_id
+        else:
+            responder_config["hf_model_id"] = args.model_id
 
     if args.caption_prompt:
         responder_config["caption_prompt"] = args.caption_prompt
@@ -343,6 +358,15 @@ def main() -> None:
         num_gpus=args.num_gpus,
     )
     print(f"Generated {total} captions to {args.output}")
+
+    if args.push_to_hf:
+        from evals.hub import upload_caption_file
+
+        upload_caption_file(
+            local_path=args.output,
+            hf_repo=args.hf_repo,
+            hf_path=args.hf_path,
+        )
 
 
 if __name__ == "__main__":
