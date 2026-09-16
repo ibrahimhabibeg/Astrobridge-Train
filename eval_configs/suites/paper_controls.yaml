@@ -60,9 +60,3 @@ models:
     name: "Meta-Muse-Glimmer-Vision-Plot"
     hf_model_id: meta-models/Muse-Glimmer-30B
     batch_size: 32
-
-  - id: meta_muse_glimmer_text
-    responder_type: hf_text
-    name: "Meta-Muse-Glimmer-Text"
-    hf_model_id: meta-models/Muse-Glimmer-30B
-    batch_size: 64
