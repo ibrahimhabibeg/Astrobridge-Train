@@ -327,6 +327,9 @@ def main() -> None:
         default=None,
         help="Override model checkpoint (hf_model_id for HF responders, or astrobridge_id for AstroBridge).",
     )
+    parser.add_argument("--max-tokens", type=int, default=None, help="Override max_tokens.")
+    parser.add_argument("--fallback-max-tokens", type=int, default=None, help="Override fallback_max_tokens.")
+    parser.add_argument("--repetition-penalty", type=float, default=None, help="Override repetition_penalty.")
     parser.add_argument("--push-to-hf", action="store_true", help="Upload resulting captions.jsonl to Hugging Face Hub.")
     parser.add_argument("--hf-repo", type=str, default=None, help="Hugging Face repo ID (default: UniverseTBD/AstroBridge-Data).")
     parser.add_argument("--hf-path", type=str, default=None, help="Target path in HF repo (default: evals/captions/<filename>).")
@@ -345,6 +348,12 @@ def main() -> None:
 
     if args.caption_prompt:
         responder_config["caption_prompt"] = args.caption_prompt
+    if args.max_tokens is not None:
+        responder_config["max_tokens"] = args.max_tokens
+    if args.fallback_max_tokens is not None:
+        responder_config["fallback_max_tokens"] = args.fallback_max_tokens
+    if args.repetition_penalty is not None:
+        responder_config["repetition_penalty"] = args.repetition_penalty
 
     total = run_caption_generation(
         responder_config=responder_config,

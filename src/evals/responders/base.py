@@ -7,6 +7,7 @@ from .sample import SpectrumSample
 from ..prompts import render_prompt
 
 DEFAULT_SPECTRUM_CAPTION_PROMPT = render_prompt("caption_generation/default.jinja2")
+DEFAULT_SYSTEM_CAPTION_PROMPT = render_prompt("caption_generation/system_caption.jinja2")
 
 
 def resolve_caption_prompt(
@@ -19,6 +20,26 @@ def resolve_caption_prompt(
     if config.get("caption_prompt_template"):
         return render_prompt(str(config["caption_prompt_template"]).strip())
     return render_prompt(default_template)
+
+
+def resolve_system_prompt(
+    config: Dict[str, Any],
+    default_template: Optional[str] = "caption_generation/system_caption.jinja2",
+) -> Optional[str]:
+    if "system_prompt" in config:
+        prompt_val = config["system_prompt"]
+        if not prompt_val:
+            return None
+        prompt_val_str = str(prompt_val).strip()
+        return render_prompt(prompt_val_str) if prompt_val_str.endswith(".jinja2") else prompt_val_str
+    if "system_prompt_template" in config:
+        template_val = config["system_prompt_template"]
+        if not template_val:
+            return None
+        return render_prompt(str(template_val).strip())
+    if default_template:
+        return render_prompt(default_template)
+    return None
 
 
 @dataclass

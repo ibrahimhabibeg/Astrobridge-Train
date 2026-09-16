@@ -8,7 +8,9 @@ from .base import (
     BaseResponder,
     GeneratedCaption,
     DEFAULT_SPECTRUM_CAPTION_PROMPT,
+    DEFAULT_SYSTEM_CAPTION_PROMPT,
     resolve_caption_prompt,
+    resolve_system_prompt,
 )
 
 
@@ -37,6 +39,8 @@ __all__ = [
     "GeneratedCaption",
     "MockCaptionResponder",
     "DEFAULT_SPECTRUM_CAPTION_PROMPT",
+    "DEFAULT_SYSTEM_CAPTION_PROMPT",
     "resolve_caption_prompt",
+    "resolve_system_prompt",
     "get_responder",
 ]

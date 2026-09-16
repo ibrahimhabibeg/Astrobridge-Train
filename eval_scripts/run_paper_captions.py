@@ -112,6 +112,9 @@ def execute_local_model(
     devices: Optional[str] = None,
     num_gpus: Optional[int] = None,
     model_id: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    fallback_max_tokens: Optional[int] = None,
+    repetition_penalty: Optional[float] = None,
 ) -> None:
     """Execute caption generation locally via subprocess for clean memory management."""
     script_path = _REPO_ROOT / "eval_scripts" / "generate_captions.py"
@@ -132,6 +135,12 @@ def execute_local_model(
         cmd.extend(["--model-id", str(model_id)])
     if limit is not None:
         cmd.extend(["--limit", str(limit)])
+    if max_tokens is not None:
+        cmd.extend(["--max-tokens", str(max_tokens)])
+    if fallback_max_tokens is not None:
+        cmd.extend(["--fallback-max-tokens", str(fallback_max_tokens)])
+    if repetition_penalty is not None:
+        cmd.extend(["--repetition-penalty", str(repetition_penalty)])
     if device is not None:
         cmd.extend(["--device", device])
     if devices is not None:
@@ -151,6 +160,9 @@ def execute_modal_model(
     batch_size: int = 32,
     modal_gpu: Optional[str] = None,
     model_id: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    fallback_max_tokens: Optional[int] = None,
+    repetition_penalty: Optional[float] = None,
 ) -> None:
     """Dispatch caption generation to Modal remote container and download results."""
     modal_script = _REPO_ROOT / "eval_scripts" / "run_modal.py"
@@ -172,6 +184,12 @@ def execute_modal_model(
         inner_args.extend(["--model-id", str(model_id)])
     if limit is not None:
         inner_args.extend(["--limit", str(limit)])
+    if max_tokens is not None:
+        inner_args.extend(["--max-tokens", str(max_tokens)])
+    if fallback_max_tokens is not None:
+        inner_args.extend(["--fallback-max-tokens", str(fallback_max_tokens)])
+    if repetition_penalty is not None:
+        inner_args.extend(["--repetition-penalty", str(repetition_penalty)])
 
     cmd = [
         "modal",
@@ -375,6 +393,10 @@ def main() -> None:
                 or model.get("astrobridge_id")
                 or model.get("model_id")
             )
+            model_max_tokens = model.get("max_tokens")
+            model_fallback_max_tokens = model.get("fallback_max_tokens")
+            model_repetition_penalty = model.get("repetition_penalty")
+
             if args.modal:
                 modal_gpu = args.modal_gpu or model.get("modal_gpu")
                 execute_modal_model(
@@ -385,6 +407,9 @@ def main() -> None:
                     batch_size=model_batch_size,
                     modal_gpu=modal_gpu,
                     model_id=model_id_override,
+                    max_tokens=model_max_tokens,
+                    fallback_max_tokens=model_fallback_max_tokens,
+                    repetition_penalty=model_repetition_penalty,
                 )
             else:
                 execute_local_model(
@@ -397,6 +422,9 @@ def main() -> None:
                     devices=args.devices,
                     num_gpus=args.num_gpus,
                     model_id=model_id_override,
+                    max_tokens=model_max_tokens,
+                    fallback_max_tokens=model_fallback_max_tokens,
+                    repetition_penalty=model_repetition_penalty,
                 )
 
         if not local_output_path.is_file():

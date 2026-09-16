@@ -18,7 +18,7 @@ def download_qwen() -> None:
     import os
     from huggingface_hub import snapshot_download
 
-    model_id = "Qwen/Qwen3.5-9B"
+    model_id = "meta-models/Muse-Glimmer-30B"
     print(f"Pre-downloading base model weights: {model_id}")
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
     snapshot_download(repo_id=model_id, token=token)
@@ -37,7 +37,7 @@ eval_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     .pip_install_from_pyproject(str(REPO_ROOT / "pyproject.toml"))
-    .run_function(download_qwen, secrets=eval_secrets)
+    # .run_function(download_qwen, secrets=eval_secrets)
     .add_local_dir(str(REPO_ROOT / "src"), remote_path="/root/astrobridge-eval/src")
     .add_local_dir(str(REPO_ROOT / "configs"), remote_path="/root/astrobridge-eval/configs")
     .add_local_dir(str(REPO_ROOT / "eval_configs"), remote_path="/root/astrobridge-eval/eval_configs")

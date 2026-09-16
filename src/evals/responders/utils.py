@@ -47,43 +47,26 @@ def format_spectrum_text(w_str: str, f_str: str, num_points: int) -> str:
     )
 
 
+def has_explicit_caption(raw_text: str) -> bool:
+    if not raw_text:
+        return False
+    pattern = r"(?:\*\*(?:FINAL\s+)?CAPTION:?\*\*|(?:\b(?:FINAL\s+)?CAPTION:))\s*:?\s*\S+"
+    return bool(re.search(pattern, raw_text))
+
+
 def clean_and_extract_caption(raw_text: str) -> str:
     if not raw_text:
         return ""
 
-    text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
-    text = re.sub(r"^.*?</think>", "", text, flags=re.DOTALL).strip()
-    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL).strip()
+    text = raw_text.strip()
+    pattern = r"(?:\*\*(?:FINAL\s+)?CAPTION:?\*\*|(?:\b(?:FINAL\s+)?CAPTION:))\s*:?\s*"
+    matches = list(re.finditer(pattern, text))
+    if matches:
+        text = text[matches[-1].end() :].strip()
 
-    match = re.search(r"\bCAPTION:\s*(.*)", text, re.DOTALL | re.IGNORECASE)
-    if match:
-        text = match.group(1).strip()
-
-    match = re.search(r"\*\*(?:Final\s+)?Caption:?\*\*\s*:?\s*(.*)", text, re.DOTALL | re.IGNORECASE)
-    if match:
-        text = match.group(1).strip()
-
-    match = re.search(r"\*(?:Revised\s+)?Draft(?:\s*\d+)?:\*\s*(?:CAPTION:\s*)?(.*)", text, re.DOTALL | re.IGNORECASE)
-    if match and len(match.group(1).strip()) > 20:
-        text = match.group(1).strip()
-
-    match = re.search(r"(?:In summary|Summary|Conclusion):\s*(.*)", text, re.DOTALL | re.IGNORECASE)
-    if match:
-        text = match.group(1).strip()
-
-    stop_patterns = [
-        r"\n\s*(?:Note|Explanation|Justification|Alternative interpretation|\d+\.\s*Final Polish|\*Wait).*$",
-    ]
-    for pattern in stop_patterns:
-        text = re.split(pattern, text, flags=re.DOTALL | re.IGNORECASE)[0].strip()
-
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    if len(paragraphs) > 1 and any(
-        kw in paragraphs[0].lower()
-        for kw in ["the user wants", "analyze the image", "analyze the spectrum", "initial observation", "1. analyze"]
+    if (text.startswith('"') and text.endswith('"')) or (
+        text.startswith("'") and text.endswith("'")
     ):
-        for p in reversed(paragraphs):
-            if not p.startswith("*") and not p.startswith("#") and not p.startswith("**") and len(p.split()) >= 6:
-                return p.strip()
+        text = text[1:-1].strip()
 
-    return text.strip()
+    return text

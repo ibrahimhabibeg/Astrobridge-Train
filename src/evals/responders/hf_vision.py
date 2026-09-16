@@ -11,9 +11,14 @@ from .base import (
     BaseResponder,
     GeneratedCaption,
     resolve_caption_prompt,
+    resolve_system_prompt,
 )
 from .sample import SpectrumSample
-from .utils import render_spectrum_plot, clean_and_extract_caption
+from .utils import (
+    render_spectrum_plot,
+    clean_and_extract_caption,
+    has_explicit_caption,
+)
 
 
 class HFVisionResponder(BaseResponder):
@@ -25,7 +30,12 @@ class HFVisionResponder(BaseResponder):
         self.caption_prompt = resolve_caption_prompt(
             config, "caption_generation/vision_baseline.jinja2"
         )
-        self._max_tokens = config.get("max_tokens", 256)
+        self.system_prompt = resolve_system_prompt(
+            config, "caption_generation/system_caption.jinja2"
+        )
+        self._max_tokens = config.get("max_tokens", 2048)
+        self._fallback_max_tokens = config.get("fallback_max_tokens", 256)
+        self._repetition_penalty = config.get("repetition_penalty", 1.1)
         self._device = device
 
         self._processor = AutoProcessor.from_pretrained(
@@ -58,7 +68,10 @@ class HFVisionResponder(BaseResponder):
             "type": "HFVisionResponder",
             "model_id": self._model_id,
             "caption_prompt": self.caption_prompt,
+            "system_prompt": self.system_prompt,
             "max_tokens": self._max_tokens,
+            "fallback_max_tokens": self._fallback_max_tokens,
+            "repetition_penalty": self._repetition_penalty,
         }
 
     def generate_captions(
@@ -77,36 +90,63 @@ class HFVisionResponder(BaseResponder):
             image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
             images.append(image)
 
-            messages = [
+            messages = []
+            if self.system_prompt:
+                messages.append({"role": "system", "content": self.system_prompt})
+            messages.append(
                 {
                     "role": "user",
                     "content": [
                         {"type": "image"},
                         {"type": "text", "text": prompt},
                     ],
-                },
-            ]
+                }
+            )
             messages_batch.append(messages)
 
-        texts = [
-            self._processor.apply_chat_template(msgs, add_generation_prompt=True)
-            for msgs in messages_batch
-        ]
+        texts = []
+        for msgs in messages_batch:
+            try:
+                t = self._processor.apply_chat_template(msgs, add_generation_prompt=True)
+            except Exception:
+                if len(msgs) > 1 and msgs[0]["role"] == "system":
+                    sys_content = msgs[0]["content"]
+                    merged_msgs = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image"},
+                                {"type": "text", "text": f"{sys_content}\n\n{prompt}"},
+                            ],
+                        }
+                    ]
+                    t = self._processor.apply_chat_template(merged_msgs, add_generation_prompt=True)
+                else:
+                    raise
+            texts.append(t)
 
         self._processor.tokenizer.padding_side = "left"
         if self._processor.tokenizer.pad_token is None:
             self._processor.tokenizer.pad_token = self._processor.tokenizer.eos_token
 
         inputs = self._processor(
-            text=texts, images=images, return_tensors="pt", padding=True
+            text=texts, images=[[img] for img in images], return_tensors="pt", padding=True
         )
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+        gen_kwargs = {
+            "max_new_tokens": self._max_tokens,
+            "do_sample": False,
+        }
+        if self._processor.tokenizer.pad_token_id is not None:
+            gen_kwargs["pad_token_id"] = self._processor.tokenizer.pad_token_id
+        if self._repetition_penalty and self._repetition_penalty != 1.0:
+            gen_kwargs["repetition_penalty"] = float(self._repetition_penalty)
 
         with torch.no_grad():
             output_ids = self._model.generate(
                 **inputs,
-                max_new_tokens=self._max_tokens,
-                do_sample=False,
+                **gen_kwargs,
             )
 
         input_len = inputs["input_ids"].shape[1]
@@ -115,8 +155,79 @@ class HFVisionResponder(BaseResponder):
             generated_ids, skip_special_tokens=True
         )
 
+        fallback_indices = [
+            i for i, raw in enumerate(raw_responses) if not has_explicit_caption(raw)
+        ]
+        fallback_triggered = {i: False for i in range(len(samples))}
+
+        if fallback_indices and self._fallback_max_tokens > 0:
+            suffix_text = "\n\nFinal answer below.\nCAPTION: "
+            fb_texts = []
+            fb_images = []
+            for i in fallback_indices:
+                orig_msgs = messages_batch[i]
+                cont_msgs = list(orig_msgs) + [
+                    {
+                        "role": "assistant",
+                        "content": f"{raw_responses[i]}{suffix_text}",
+                    }
+                ]
+                try:
+                    fb_text_prompt = self._processor.apply_chat_template(
+                        cont_msgs, continue_final_message=True
+                    )
+                except Exception:
+                    if len(cont_msgs) > 2 and cont_msgs[0]["role"] == "system":
+                        sys_content = cont_msgs[0]["content"]
+                        user_content = [
+                            {"type": "image"},
+                            {"type": "text", "text": f"{sys_content}\n\n{prompt}"},
+                        ]
+                        merged_cont = [
+                            {"role": "user", "content": user_content},
+                            cont_msgs[-1],
+                        ]
+                        fb_text_prompt = self._processor.apply_chat_template(
+                            merged_cont, continue_final_message=True
+                        )
+                    else:
+                        raise
+                fb_texts.append(fb_text_prompt)
+                fb_images.append(images[i])
+
+            try:
+                fb_inputs = self._processor(
+                    text=fb_texts,
+                    images=[[img] for img in fb_images],
+                    return_tensors="pt",
+                    padding=True,
+                )
+                fb_inputs = {k: v.to(self._device) for k, v in fb_inputs.items()}
+
+                fb_gen_kwargs = {
+                    "max_new_tokens": self._fallback_max_tokens,
+                    "do_sample": False,
+                }
+                if self._processor.tokenizer.pad_token_id is not None:
+                    fb_gen_kwargs["pad_token_id"] = self._processor.tokenizer.pad_token_id
+                if self._repetition_penalty and self._repetition_penalty != 1.0:
+                    fb_gen_kwargs["repetition_penalty"] = float(self._repetition_penalty)
+
+                with torch.no_grad():
+                    fb_output_ids = self._model.generate(**fb_inputs, **fb_gen_kwargs)
+
+                fb_gen_ids = fb_output_ids[:, fb_inputs["input_ids"].shape[1]:]
+                fb_raw_responses = self._processor.tokenizer.batch_decode(
+                    fb_gen_ids, skip_special_tokens=True
+                )
+                for k, i in enumerate(fallback_indices):
+                    raw_responses[i] = (raw_responses[i] + suffix_text + fb_raw_responses[k]).strip()
+                    fallback_triggered[i] = True
+            except Exception as e:
+                print(f"Batched vision fallback generation error: {e}")
+
         captions = []
-        for sample, raw in zip(samples, raw_responses):
+        for i, (sample, raw) in enumerate(zip(samples, raw_responses)):
             cleaned = clean_and_extract_caption(raw)
             captions.append(
                 GeneratedCaption(
@@ -126,7 +237,10 @@ class HFVisionResponder(BaseResponder):
                     model_id=self._model_id,
                     caption_prompt=prompt,
                     survey=sample.survey,
-                    metadata={"raw_output": raw},
+                    metadata={
+                        "raw_output": raw,
+                        "fallback_triggered": fallback_triggered[i],
+                    },
                 )
             )
         return captions
