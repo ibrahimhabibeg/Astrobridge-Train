@@ -32,6 +32,9 @@ def run_caption_evaluation(
     output_dir: str,
     limit: Optional[int] = None,
     batch_size: int = 32,
+    device: Optional[str] = None,
+    devices: Optional[list[str] | str] = None,
+    num_gpus: Optional[int] = None,
 ) -> Dict[str, Any]:
     os.makedirs(output_dir, exist_ok=True)
     task = get_task(task_config["name"], **task_config.get("kwargs", {}))
@@ -67,6 +70,9 @@ def run_caption_evaluation(
             benchmark=benchmark_name,
             limit=limit,
             batch_size=batch_size,
+            device=device,
+            devices=devices,
+            num_gpus=num_gpus,
             df=df,
         )
         with open(captions_path, "r") as f:
@@ -165,6 +171,9 @@ def main():
     parser.add_argument("--gemini-model", type=str, default=None, help="Override Gemini model.")
     parser.add_argument("--output-dir", type=str, default=None, help="Custom output directory.")
     parser.add_argument("--suffix-tag", type=str, default=None, help="Optional suffix for the output directory name.")
+    parser.add_argument("--device", type=str, default=None, help="Device to use for caption generation (cuda, mps, cpu).")
+    parser.add_argument("--devices", type=str, default=None, help="Comma-separated devices for caption generation (e.g. '0,1', 'all').")
+    parser.add_argument("--num-gpus", type=int, default=None, help="Number of GPUs to use for caption generation.")
     args = parser.parse_args()
 
     dotenv.load_dotenv()
@@ -200,6 +209,9 @@ def main():
         output_dir=output_dir,
         limit=args.limit,
         batch_size=args.batch_size,
+        device=args.device,
+        devices=args.devices,
+        num_gpus=args.num_gpus,
     )
     print(f"Evaluation complete. Results written to {output_dir}")
 

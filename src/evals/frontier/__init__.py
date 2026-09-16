@@ -3,25 +3,25 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from .base import FrontierModel, FrontierResponse
-from .gemini import GeminiFrontierModel
-from .mock import MockFrontierModel
-
-FRONTIER_REGISTRY = {
-    "gemini": GeminiFrontierModel,
-    "mock": MockFrontierModel,
-}
-
-
 def get_frontier_model(config: Dict[str, Any]) -> FrontierModel:
+    from .mock import MockFrontierModel
+
     model_type = config.get("frontier_type", "gemini")
-    if model_type not in FRONTIER_REGISTRY:
+    if model_type == "gemini":
+        from .gemini import GeminiFrontierModel
+        return GeminiFrontierModel(config)
+    elif model_type == "mock":
+        return MockFrontierModel(config)
+    else:
         raise ValueError(
-            f"Unknown frontier model type '{model_type}'. Available: {list(FRONTIER_REGISTRY.keys())}"
+            f"Unknown frontier model type '{model_type}'. Available: ['gemini', 'mock']"
         )
-    return FRONTIER_REGISTRY[model_type](config)
 
 
-MockFrontierJudge = MockFrontierModel
+def MockFrontierJudge(config: Dict[str, Any]) -> FrontierModel:
+    from .mock import MockFrontierModel
+    return MockFrontierModel(config)
+
 get_frontier_judge = get_frontier_model
 
 __all__ = [

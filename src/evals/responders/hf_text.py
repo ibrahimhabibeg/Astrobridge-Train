@@ -30,12 +30,26 @@ class HFTextResponder(BaseResponder):
         self._tokenizer = AutoTokenizer.from_pretrained(
             self._model_id, trust_remote_code=True
         )
-        self._model = AutoModelForCausalLM.from_pretrained(
-            self._model_id,
-            device_map="auto",
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-        )
+        if device.startswith("cuda"):
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self._model_id,
+                device_map={"": device},
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
+        elif device in ("cpu", "mps"):
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self._model_id,
+                torch_dtype=torch.float32 if device == "cpu" else torch.bfloat16,
+                trust_remote_code=True,
+            ).to(device)
+        else:
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self._model_id,
+                device_map=device,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+            )
         self._model.eval()
 
     def get_config(self) -> Dict[str, Any]:

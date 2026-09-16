@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import re
 from typing import Tuple
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
@@ -74,49 +75,113 @@ class AstroBridgeResponder(BaseResponder):
     def _generate_caption_batch(
         self,
         raw_inputs_list: List[Dict[str, Any]],
-        questions: str,
+        questions: list[str] | str | None = None,
         max_new_tokens: int = 512,
     ) -> List[str]:
-        features_list = []
-        for raw_inputs in raw_inputs_list:
-            feat_dict = {}
-            for name, enc in self.encoders.items():
-                if name in raw_inputs and raw_inputs[name] is not None:
-                    device_inputs = {
-                        k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-                        for k, v in raw_inputs[name].items()
-                    }
-                    feat_dict[name] = enc(device_inputs).to(self.device)
-            features_list.append(feat_dict)
-
-        bsz = len(features_list)
-        fused_features = {}
-        for name in self.cfg.modalities:
-            mod_feats = [fl[name] for fl in features_list if name in fl]
-            if len(mod_feats) == bsz:
-                fused_features[name] = torch.cat(mod_feats, dim=0)
-
-        pre, post = build_wrapper_text(self.tokenizer, questions)
-        pre_ids = self.tokenizer.encode(
-            pre, add_special_tokens=False, return_tensors="pt"
-        ).to(self.device)
-        post_ids = self.tokenizer.encode(
-            post, add_special_tokens=False, return_tensors="pt"
-        ).to(self.device)
-
-        pre_ids = pre_ids.repeat(bsz, 1)
-        post_ids = post_ids.repeat(bsz, 1)
-
         with torch.no_grad():
-            output_ids = self.model.generate(
-                fused_features,
-                pre_ids,
-                post_ids,
-                max_new_tokens=max_new_tokens,
-                temperature=0.0,
-            )
+            if not raw_inputs_list:
+                return []
 
-        return self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)
+            B = len(raw_inputs_list)
+
+            modality_batch = {}
+            for name, out_dim in self.out_dims.items():
+                T_m = self.max_tokens[name]
+                tokens = torch.zeros(
+                    (B, T_m, out_dim), dtype=torch.float32, device=self.device
+                )
+                mask = torch.ones((B, T_m), dtype=torch.bool, device=self.device)
+
+                for i, raw_inputs in enumerate(raw_inputs_list):
+                    if name in raw_inputs:
+                        raw_tokens = (
+                            self.encoders[name]
+                            .encode(raw_inputs[name])
+                            .to(torch.float32)
+                        )
+                        n = min(raw_tokens.shape[1], T_m)
+                        tokens[i, :n] = raw_tokens[0, :n].to(self.device)
+                        mask[i, :n] = False
+                modality_batch[name] = {"tokens": tokens, "mask": mask}
+
+            autocast_ctx = (
+                torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+                if str(self.device).startswith("cuda")
+                else contextlib.nullcontext()
+            )
+            with autocast_ctx:
+                prefix = self.model.fusion_stack(modality_batch)
+
+                system = self.cfg.prompt.system_variants[0]
+
+                if isinstance(questions, str):
+                    questions_list = [questions] * B
+                elif questions is None:
+                    questions_list = [self.cfg.prompt.instruction_variants[0]] * B
+                else:
+                    questions_list = list(questions)
+
+                embed_fn = self.model.llm.get_input_embeddings()
+                embeds_list = []
+
+                for i in range(B):
+                    pre_text, post_text = build_wrapper_text(
+                        self.cfg.prompt, system, questions_list[i]
+                    )
+
+                    pre_ids = self.tokenizer(
+                        pre_text, add_special_tokens=False, return_tensors="pt"
+                    )["input_ids"].to(self.device)
+                    post_ids = self.tokenizer(
+                        post_text, add_special_tokens=False, return_tensors="pt"
+                    )["input_ids"].to(self.device)
+
+                    pre_embeds = embed_fn(pre_ids)
+                    post_embeds = embed_fn(post_ids)
+
+                    pref = prefix[i : i + 1]
+
+                    seq_embeds = torch.cat([pre_embeds, pref, post_embeds], dim=1)
+                    embeds_list.append(seq_embeds.squeeze(0))
+
+                max_len = max(emb.shape[0] for emb in embeds_list)
+                d_llm = embeds_list[0].shape[-1]
+
+                inputs_embeds = torch.zeros(
+                    (B, max_len, d_llm), dtype=embeds_list[0].dtype, device=self.device
+                )
+                attention_mask = torch.zeros(
+                    (B, max_len), dtype=torch.long, device=self.device
+                )
+
+                for i, emb in enumerate(embeds_list):
+                    seq_len = emb.shape[0]
+                    inputs_embeds[i, -seq_len:] = emb
+                    attention_mask[i, -seq_len:] = 1
+
+                pad_token_id = (
+                    self.tokenizer.pad_token_id
+                    if self.tokenizer.pad_token_id is not None
+                    else self.tokenizer.eos_token_id
+                )
+
+                eos_ids = [self.tokenizer.eos_token_id]
+                im_end_id = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
+                if im_end_id is not None and im_end_id not in eos_ids:
+                    eos_ids.append(im_end_id)
+                endoftext_id = self.tokenizer.convert_tokens_to_ids("<|endoftext|>")
+                if endoftext_id is not None and endoftext_id not in eos_ids:
+                    eos_ids.append(endoftext_id)
+
+                gen = self.model.llm.generate(
+                    inputs_embeds=inputs_embeds,
+                    attention_mask=attention_mask,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=pad_token_id,
+                    eos_token_id=eos_ids,
+                )
+            return self.tokenizer.batch_decode(gen, skip_special_tokens=True)
 
     def generate_captions(
         self,

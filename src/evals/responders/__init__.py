@@ -13,24 +13,22 @@ from .base import (
 
 
 def get_responder(config: Dict[str, Any], device: str) -> BaseResponder:
-    from .astrobridge import AstroBridgeResponder
-    from .hf_vision import HFVisionResponder
-    from .hf_text import HFTextResponder
-
-    REGISTRY = {
-        "astrobridge": AstroBridgeResponder,
-        "hf_vision": HFVisionResponder,
-        "hf_text": HFTextResponder,
-        "mock": MockCaptionResponder,
-    }
-
     responder_type = config.get("responder_type")
-    if responder_type not in REGISTRY:
+    if responder_type == "mock":
+        return MockCaptionResponder(config, device)
+    elif responder_type == "astrobridge":
+        from .astrobridge import AstroBridgeResponder
+        return AstroBridgeResponder(config, device)
+    elif responder_type == "hf_vision":
+        from .hf_vision import HFVisionResponder
+        return HFVisionResponder(config, device)
+    elif responder_type == "hf_text":
+        from .hf_text import HFTextResponder
+        return HFTextResponder(config, device)
+    else:
         raise ValueError(
-            f"Unknown responder '{responder_type}'. Available: {list(REGISTRY.keys())}"
+            f"Unknown responder '{responder_type}'. Available: ['astrobridge', 'hf_vision', 'hf_text', 'mock']"
         )
-
-    return REGISTRY[responder_type](config, device)
 
 
 __all__ = [
