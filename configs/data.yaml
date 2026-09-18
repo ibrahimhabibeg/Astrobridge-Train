@@ -107,6 +107,18 @@ splits:
   # its own rather than only the totals working out.
   val: 0.2
   test: 0.1
+  # Per-tier overrides on the val/test fractions above — stratification itself (which strata
+  # form, e.g. survey within spectra) is unaffected, only the split sizes within each stratum.
+  # spectra: no separate external held-out test set exists anywhere in this repo (unlike
+  # image/lightcurve, which eval against their own dedicated test datasets — Galaxy10's own test
+  # parquet, the YSE test set) — so carving out `test` here would hold data back from training
+  # with nothing that will ever score it. 80/20 train/val instead, no test, survey-stratified
+  # (SDSS/DESI) exactly as the un-overridden draw would be. Revisit if a real spectra eval set is
+  # ever built — at that point this override should come back out.
+  tier_overrides:
+    spectra:
+      val: 0.2
+      test: 0.0
   seed: ${seed}          # resolved from base.yaml at load time
 
 sanity:

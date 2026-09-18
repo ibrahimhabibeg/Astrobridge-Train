@@ -158,7 +158,13 @@ def render_lightcurve_plot(row: pd.Series) -> Image.Image:
             any_plotted = True
     ax.set_xlabel("Days since first detection")
     ax.set_ylabel("Flux (SNANA FLUXCAL, zp=27.5)")
-    ax.set_title(f"Light curve — object {row.get('object_id', '')}")
+    # Deliberately no object_id in the title — these are real, catalogued ZTF/YSE supernovae, so a
+    # title naming the object hands the base model (native vision, reads text baked into the image
+    # like any other pixels) the answer for free: it can transcribe the name and recognise/recall
+    # the object instead of reading the photometry. Confirmed live: 256/266 base captions echoed
+    # their own object_id back. Equipped has no equivalent leak — it consumes numeric arrays, never
+    # a name — so a titled plot made the two sides not comparable.
+    ax.set_title("Light curve")
     if any_plotted:
         ax.legend()
     fig.tight_layout()

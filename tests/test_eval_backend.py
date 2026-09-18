@@ -135,3 +135,56 @@ def _cfg_reload():
     # all mock-assertion contexts; rebuild the same structure for the equality check in
     # assert_called_once_with above.
     return _cfg()
+
+
+# --- batched dispatch -----------------------------------------------------------------------
+
+
+def test_equipped_backend_generate_batch_dispatches_to_generate_captions_batched():
+    with (
+        patch("captioner.inference.load_inference_model_from_hub", return_value=(object(), object(), {})),
+        patch("captioner.inference.generate_captions_batched", return_value=["a", "b"]) as mock_batched,
+        patch("captioner.inference.generate_caption") as mock_single,
+    ):
+        backend = get_backend("local", side="equipped", cfg=_cfg(), repo_id="org/repo", device="cpu", modality_names=["image"])
+        out = backend.generate_batch([{"image": {}}, {"image": {}}], "describe it", max_new_tokens=10)
+
+    assert out == ["a", "b"]
+    mock_single.assert_not_called()  # the whole point: one batched call, not a loop over generate
+    assert mock_batched.call_args.kwargs["question"] == "describe it"
+    assert mock_batched.call_args.kwargs["max_new_tokens"] == 10
+
+
+def test_base_backend_generate_batch_dispatches_to_the_batched_vision_path():
+    with (
+        patch("captioner.inference.load_qwen_native_vision_model", return_value=(object(), object())),
+        patch("captioner.inference.generate_qwen_native_vision_answers_batched", return_value=["x", "y"]) as mock_batched,
+    ):
+        backend = get_backend("local", side="base", cfg=_cfg(), device="cpu")
+        out = backend.generate_batch([{"image": "i1"}, {"image": "i2"}], "what is this?", max_new_tokens=5)
+
+    assert out == ["x", "y"]
+    assert mock_batched.call_args.args[4] == ["i1", "i2"]  # images unwrapped, in order
+
+
+def test_base_backend_generate_batch_rejects_non_image_raw_inputs():
+    with patch("captioner.inference.load_qwen_native_vision_model", return_value=(object(), object())):
+        backend = get_backend("local", side="base", cfg=_cfg(), device="cpu")
+        with pytest.raises(KeyError, match="only ever consumes"):
+            backend.generate_batch([{"image": "ok"}, {"lightcurve": {}}], "q", max_new_tokens=5)
+
+
+def test_generate_batch_falls_back_to_looping_generate_when_no_batched_path_is_wired():
+    """Callers can always use generate_batch — a backend without a batched closure still works."""
+    from eval.backend import EvalBackend
+
+    backend = EvalBackend(side="equipped", _generate=lambda r, q, n, s: f"cap:{r['id']}")
+    assert backend.generate_batch([{"id": 1}, {"id": 2}], "q", 5) == ["cap:1", "cap:2"]
+
+
+def test_free_local_backend_drops_the_batched_closure_too():
+    """Otherwise the closure keeps the model alive and the VRAM-freeing silently stops working."""
+    with patch("captioner.inference.load_qwen_native_vision_model", return_value=(object(), object())):
+        backend = get_backend("local", side="base", cfg=_cfg(), device="cpu")
+    free_local_backend(backend)
+    assert backend._generate_batch is None

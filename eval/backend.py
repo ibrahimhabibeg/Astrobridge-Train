@@ -48,7 +48,18 @@ class EvalBackend:
 
     side: Side
     _generate: Callable[[dict, str, int, str | None], str]
+    _generate_batch: Callable[[list, str, int, str | None], list[str]] | None = None
     _classify: Callable[[dict, str, list[str], int], dict] | None = None
+
+    def generate_batch(
+        self, raw_inputs_list: list, question: str, max_new_tokens: int = 128, system: str | None = None,
+    ) -> list[str]:
+        """`generate(...)` over B objects in one forward pass, answers in input order. Falls back
+        to looping `generate(...)` when a backend has no batched path wired, so callers can always
+        use it. See `captioner.inference.generate_captions_batched` for why batching wins here."""
+        if self._generate_batch is None:
+            return [self._generate(r, question, max_new_tokens, system) for r in raw_inputs_list]
+        return self._generate_batch(raw_inputs_list, question, max_new_tokens, system)
 
     def generate(self, raw_inputs: dict, question: str, max_new_tokens: int = 128, system: str | None = None) -> str:
         """`system`: only meaningful for `side="equipped"` (overrides `configs/model.yaml`'s
@@ -117,6 +128,8 @@ def _local_backend(
 ) -> EvalBackend:
     from captioner.inference import (
         generate_caption,
+        generate_captions_batched,
+        generate_qwen_native_vision_answers_batched,
         generate_qwen_native_vision_answer,
         load_inference_model_from_hub,
         load_qwen_native_vision_model,
@@ -150,7 +163,13 @@ def _local_backend(
             )
             return {"reasoning": reasoning, "logprobs": logprobs}
 
-        return EvalBackend(side="equipped", _generate=_generate, _classify=_classify)
+        def _generate_batch(raw_inputs_list: list, question: str, max_new_tokens: int, system: str | None = None) -> list[str]:
+            return generate_captions_batched(
+                model, tokenizer, encoders, out_dims, max_tokens, cfg.prompt, device,
+                raw_inputs_list, max_new_tokens=max_new_tokens, question=question, system=system,
+            )
+
+        return EvalBackend(side="equipped", _generate=_generate, _classify=_classify, _generate_batch=_generate_batch)
 
     # side == "base"
     vision_model, processor = load_qwen_native_vision_model(cfg, device=device)
@@ -181,7 +200,16 @@ def _local_backend(
         )
         return {"reasoning": reasoning, "logprobs": logprobs}
 
-    return EvalBackend(side="base", _generate=_generate, _classify=_classify)
+    def _generate_batch(raw_inputs_list: list, question: str, max_new_tokens: int, system: str | None = None) -> list[str]:
+        for raw in raw_inputs_list:
+            if "image" not in raw or len(raw) != 1:
+                raise KeyError(f"base backend only ever consumes {{'image': <PIL.Image>}} — got keys {list(raw)}.")
+        return generate_qwen_native_vision_answers_batched(
+            vision_model, processor, device, question, [r["image"] for r in raw_inputs_list],
+            max_new_tokens=max_new_tokens, enable_thinking=enable_thinking,
+        )
+
+    return EvalBackend(side="base", _generate=_generate, _classify=_classify, _generate_batch=_generate_batch)
 
 
 def free_local_backend(backend: EvalBackend) -> None:
@@ -195,6 +223,7 @@ def free_local_backend(backend: EvalBackend) -> None:
 
     del backend._generate
     backend._classify = None
+    backend._generate_batch = None
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -231,10 +260,13 @@ hf_cache_volume = modal.Volume.from_name("astrobridge-hf-cache", create_if_missi
 
 # Real, confirmed-live published repo. Bumped to v5 (image + spectra + lightcurve, 64-query
 # Q-Former, chat-template prompting) from the earlier v3_qwen default.
-DEFAULT_MODEL_REPO_ID = "UniverseTBD/astrobridge-model-v5"
+DEFAULT_MODEL_REPO_ID = "UniverseTBD/astrobridge-model-v7"
 
 # A100, not L4 — bumped per explicit request for faster real eval runs.
-_MODAL_GPU_KW = {"gpu": "A100"}
+# Pinned to the 40GB A100 explicitly: bare "A100" is Modal's 40GB variant anyway, but naming it
+# means a future Modal default change can't silently move us to the pricier 80GB card. 40GB is
+# ample — ~18GB of Qwen weights plus tens of MB per batched sequence.
+_MODAL_GPU_KW = {"gpu": "A100-40GB"}
 
 
 _MODAL_CLS_KW = dict(
@@ -299,6 +331,43 @@ class _EquippedModel:
         )
 
     @modal.method()
+    def infer_batch(
+        self, raw_inputs_list: list, question: str, max_new_tokens: int = 128, system: str | None = None,
+    ) -> list[str]:
+        """B objects per remote call instead of one — see
+        `captioner.inference.generate_captions_batched` for why this is the large win, and it also
+        removes B-1 Modal round trips."""
+        from captioner.inference import generate_captions_batched
+
+        return generate_captions_batched(
+            self.model, self.tokenizer, self.encoders, self.out_dims, self.max_tokens, self.cfg.prompt,
+            self.device, raw_inputs_list, max_new_tokens=max_new_tokens, question=question, system=system,
+        )
+
+    @modal.method()
+    def fusion_prefix(self, raw_inputs_list: list) -> list:
+        """Diagnostic, not part of the caption/classify surface: returns the raw fusion-stack
+        prefix embeddings (n_queries x d_llm, flattened) for each object in `raw_inputs_list`, no
+        LLM decode involved. Exists to sanity-check the encoder in isolation — if prefix vectors
+        for genuinely different light curves (or a real object vs pure random-noise input) come
+        out near-identical, the bug is upstream of the LLM/training-target truncation entirely
+        (a dead/collapsed encoder), which the truncation-bug finding alone cannot rule out since
+        it only ever observed behavior through a decoder trained on truncated targets.
+        """
+        import torch
+
+        from captioner.inference import _build_modality_batch
+
+        device_type = "cuda" if str(self.device).startswith("cuda") else "cpu"
+        out = []
+        with torch.no_grad(), torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            for raw in raw_inputs_list:
+                mb = _build_modality_batch(self.encoders, self.out_dims, self.max_tokens, raw, self.device)
+                prefix = self.model.fusion_stack(mb)  # (1, n_queries, d_llm)
+                out.append(prefix.float().reshape(-1).cpu().tolist())
+        return out
+
+    @modal.method()
     def classify(
         self, raw_inputs_serialized: dict, context: str, candidates: list[str], max_reasoning_tokens: int = 150,
     ) -> dict:
@@ -349,6 +418,22 @@ class _BaseModel:
         )
 
     @modal.method()
+    def infer_batch(
+        self, image_bytes_list: list, question: str, max_new_tokens: int = 128, enable_thinking: bool | None = None,
+    ) -> list[str]:
+        import io
+
+        from PIL import Image
+
+        from captioner.inference import generate_qwen_native_vision_answers_batched
+
+        images = [Image.open(io.BytesIO(b)) for b in image_bytes_list]
+        return generate_qwen_native_vision_answers_batched(
+            self.vision_model, self.processor, self.device, question, images,
+            max_new_tokens=max_new_tokens, enable_thinking=enable_thinking,
+        )
+
+    @modal.method()
     def classify(self, image_bytes: bytes, context: str, candidates: list[str], max_reasoning_tokens: int = 150) -> dict:
         """`enable_thinking=False` for the reasoning step too (not just scoring) — see
         `score_completions_qwen_native`'s docstring for why an open `<think>` block breaks the
@@ -396,7 +481,10 @@ def _modal_backend(
         def _classify(raw_inputs: dict, context: str, candidates: list[str], max_reasoning_tokens: int) -> dict:
             return instance.classify.remote(raw_inputs, context, candidates, max_reasoning_tokens)
 
-        return EvalBackend(side="equipped", _generate=_generate, _classify=_classify)
+        def _generate_batch(raw_inputs_list: list, question: str, max_new_tokens: int, system: str | None = None) -> list[str]:
+            return instance.infer_batch.remote(raw_inputs_list, question, max_new_tokens, system)
+
+        return EvalBackend(side="equipped", _generate=_generate, _classify=_classify, _generate_batch=_generate_batch)
 
     cls = modal.Cls.from_name(modal_app_name, "_BaseModel")
     instance = cls()
@@ -423,4 +511,12 @@ def _modal_backend(
             )
         return instance.classify.remote(_to_png_bytes(raw_inputs["image"]), context, candidates, max_reasoning_tokens)
 
-    return EvalBackend(side="base", _generate=_generate, _classify=_classify)
+    def _generate_batch(raw_inputs_list: list, question: str, max_new_tokens: int, system: str | None = None) -> list[str]:
+        for raw in raw_inputs_list:
+            if "image" not in raw or len(raw) != 1:
+                raise KeyError(f"base backend only ever consumes {{'image': <PIL.Image>}} — got keys {list(raw)}.")
+        return instance.infer_batch.remote(
+            [_to_png_bytes(r["image"]) for r in raw_inputs_list], question, max_new_tokens, enable_thinking,
+        )
+
+    return EvalBackend(side="base", _generate=_generate, _classify=_classify, _generate_batch=_generate_batch)

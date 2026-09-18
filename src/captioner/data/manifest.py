@@ -299,6 +299,7 @@ def _draw_per_tier(
     frac_test: float,
     rng,
     keys: list[str] | None = None,
+    tier_fraction_overrides: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[set, set]:
     """Draw val/test proportionally within every stratum, where a stratum is one combination of
     `keys` (default `["tier"]`, i.e. the original behaviour).
@@ -315,8 +316,17 @@ def _draw_per_tier(
     NaN is a real stratum here, not missing data — light-curve objects have no `survey` — so it
     is filled rather than dropped. `groupby` would otherwise silently drop all 987 of them from
     the draw and leave them entirely in train.
+
+    `tier_fraction_overrides`: `{tier_name: (frac_val, frac_test)}`, checked per stratum group
+    against that group's `tier` value — lets one tier use different val/test fractions than the
+    rest (e.g. spectra has no separate external held-out test set anywhere in this repo, unlike
+    image/lightcurve which eval against their own dedicated test datasets, so spectra's `test`
+    fraction is set to 0.0 here rather than carving out held-out data with nowhere to use it).
+    Stratification itself (which strata get formed) is unaffected — only the val/test fractions
+    applied within each group change.
     """
     keys = list(keys or ["tier"])
+    tier_fraction_overrides = tier_fraction_overrides or {}
     val: set = set()
     test: set = set()
     pool = manifest[manifest["object_id"].isin(set(object_ids))]
@@ -324,10 +334,12 @@ def _draw_per_tier(
         return val, test
     grouping = [pool[k].astype(object).where(pool[k].notna(), STRATIFY_NA) for k in keys]
     for _, group in pool.groupby(grouping, sort=True):
+        group_tier = group["tier"].iloc[0] if "tier" in group.columns and len(group) else None
+        gv, gt = tier_fraction_overrides.get(group_tier, (frac_val, frac_test))
         ids = group["object_id"].to_numpy().copy()
         rng.shuffle(ids)
-        n_val = int(round(len(ids) * float(frac_val)))
-        n_test = int(round(len(ids) * float(frac_test)))
+        n_val = int(round(len(ids) * float(gv)))
+        n_test = int(round(len(ids) * float(gt)))
         val.update(ids[:n_val])
         test.update(ids[n_val : n_val + n_test])
     return val, test
@@ -360,6 +372,17 @@ def assign_splits(manifest: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
     stratify_by = [
         k for k in list(cfg.splits.get("stratify_by", ["tier"])) if k in manifest.columns
     ] or ["tier"]
+
+    # Per-tier val/test fraction overrides — e.g. spectra has no separate external held-out test
+    # set anywhere in this repo (unlike image/lightcurve, which eval against their own dedicated
+    # test datasets: Galaxy10's own test parquet, the YSE test set), so carving out a `test` slice
+    # for it holds data back from training with nothing that will ever score it. See
+    # `_draw_per_tier`'s docstring for the mechanics; stratification (survey within spectra) is
+    # unaffected, only the fractions are.
+    tier_fraction_overrides = {
+        tier: (float(entry.get("val", cfg.splits.val)), float(entry.get("test", cfg.splits.test)))
+        for tier, entry in dict(cfg.splits.get("tier_overrides", {})).items()
+    }
 
     joint_ids = manifest.loc[manifest["tier"] == "joint", "object_id"].to_numpy()
     min_joint = int(cfg.sanity.min_joint_objects) if "sanity" in cfg else 0
@@ -415,20 +438,26 @@ def assign_splits(manifest: pd.DataFrame, cfg: DictConfig) -> pd.DataFrame:
 
     if upstream is None:
         val_ids, test_ids = _draw_per_tier(
-            manifest, eligible_ids, cfg.splits.val, cfg.splits.test, rng, stratify_by
+            manifest, eligible_ids, cfg.splits.val, cfg.splits.test, rng, stratify_by,
+            tier_fraction_overrides,
         )
     else:
+        # NOTE: upstream-honouring path is dead code as configured — `honor_upstream: false` is
+        # pinned in configs/data.yaml — but kept correct: a tier with a `test`-fraction override
+        # of 0.0 would still gain test objects here from the source's OWN split labels, since
+        # those are taken as given rather than drawn. Revisit if honor_upstream is ever flipped.
         test_ids |= set(manifest.loc[upstream == "test", "object_id"])
 
         carved, _ = _draw_per_tier(
             manifest, manifest.loc[upstream == "train", "object_id"], cfg.splits.val, 0.0, rng,
-            stratify_by,
+            stratify_by, tier_fraction_overrides,
         )
         val_ids |= carved
 
         unlabelled = set(manifest.loc[upstream.isna(), "object_id"]) & eligible_ids
         drawn_val, drawn_test = _draw_per_tier(
-            manifest, unlabelled, cfg.splits.val, cfg.splits.test, rng, stratify_by
+            manifest, unlabelled, cfg.splits.val, cfg.splits.test, rng, stratify_by,
+            tier_fraction_overrides,
         )
         val_ids |= drawn_val
         test_ids |= drawn_test

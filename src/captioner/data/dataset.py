@@ -51,7 +51,20 @@ class CaptionerDataset(Dataset):
         split: str,
         tokenizer,
         prompt_cfg: DictConfig,
-        max_caption_tokens: int = 128,
+        # Was 128 with no documented reasoning anywhere (unchanged since the initial commit, never
+        # overridden at any of its 4 call sites) — and silently truncated captions in training.
+        # Measured directly against every tier's real caption text (Qwen3.5-9B tokenizer,
+        # add_special_tokens=False): lightcurve max 297 tok, image max 213 tok, spectra max 174
+        # tok. Lightcurve was hit hardest — 99.6% of its 987 captions got truncated, and since
+        # every one of them puts its classification sentence in the FINAL sentence (confirmed:
+        # position 0.98 of the caption, 100% of the time), truncation was cutting exactly the part
+        # of the caption that says which SN class and why, on nearly every training example.
+        # True max + suffix is 298 (297, lightcurve, + 1 for <|im_end|>) — the minimum value that
+        # truncates NOTHING in any tier as of this measurement; set to 300 for a couple tokens of
+        # headroom. Caption sources get rewritten in place across revisions (see configs/data.yaml),
+        # so re-measure this against the live max whenever captions are regenerated, rather than
+        # assuming it holds.
+        max_caption_tokens: int = 300,
     ) -> None:
         self.manifest = manifest[manifest["split"] == split].reset_index(drop=True)
         self.captions = captions

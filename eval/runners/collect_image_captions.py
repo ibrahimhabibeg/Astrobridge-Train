@@ -60,7 +60,7 @@ _OUT_BY_SIDE = {
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--side", choices=["equipped", "base"], default="equipped")
-    parser.add_argument("--repo-id", default="UniverseTBD/astrobridge-model-v5")
+    parser.add_argument("--repo-id", default="UniverseTBD/astrobridge-model-v7")
     parser.add_argument("--backend", choices=["local", "modal"], default="local")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--n", type=int, default=150, help="total sample size across all 10 classes")
@@ -68,12 +68,24 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0, help="the ONE seed that determines the whole sample")
     parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
     parser.add_argument(
+        "--batch-size", type=int, default=16,
+        help="objects per forward pass. Decode is memory-bandwidth-bound, so B sequences cost "
+             "barely more wall-clock than 1 while emitting B tokens per weight read; marginal "
+             "VRAM is ~40MB/sequence against ~18GB of fixed weights. 1 restores the old "
+             "one-at-a-time path.",
+    )
+    parser.add_argument(
         "--base-enable-thinking", action="store_true", default=False,
         help="--side base only. Off by default — Qwen/Qwen3.5-9B's own chat template opens a "
              "reasoning block by default, confirmed live elsewhere in this eval bench to truncate "
              "the actual answer before it's ever reached at a bounded token budget.",
     )
     parser.add_argument("--out", default=None, help="defaults to gz10_images.json (equipped) or gz10_images_base.json (base)")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="skip objects already present in --out and keep them. The output file is rewritten "
+             "after every batch, so a crashed or hung run resumes instead of redoing everything.",
+    )
     args = parser.parse_args(remaining_argv())
 
     cfg = load_config("base", "data", "modalities", "model", "stage2")
@@ -94,38 +106,59 @@ def main() -> None:
             args.backend, side="base", cfg=cfg, device=args.device, enable_thinking=args.base_enable_thinking,
         )
 
+    out_path = Path(args.out) if args.out else Path(_OUT_BY_SIDE[args.side])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rows = [row for _, row in sample.iterrows()]
+    question = None if args.side == "equipped" else BASE_CAPTION_QUESTION
+
+    # Resume: keep whatever a previous run already captioned and caption only the rest. A Modal
+    # container that dies mid-run leaves the client hanging on .remote() with no error, so a long
+    # run losing everything is a real failure mode, not a hypothetical.
     objects = []
-    for _, row in tqdm(sample.iterrows(), total=len(sample), desc=f"collect [{args.side} captions]"):
-        if args.side == "equipped":
-            raw_inputs = build_raw_inputs(row)
-            caption = backend.generate(raw_inputs, None, args.max_new_tokens)
-        else:
-            image = decode_rgb_image(row["image_rgb"])
-            caption = backend.generate({"image": image}, BASE_CAPTION_QUESTION, args.max_new_tokens)
-        objects.append({
-            "Galaxy10_DECals_index": int(row["Galaxy10_DECals_index"]),
-            "label_name": row["label_name"],
-            "caption": caption,
-        })
+    if args.resume and out_path.exists():
+        objects = json.loads(out_path.read_text()).get("objects", [])
+        done = {o["Galaxy10_DECals_index"] for o in objects}
+        rows = [row for row in rows if int(row["Galaxy10_DECals_index"]) not in done]
+        logger.info(f"Resuming: {len(objects)} already captioned, {len(rows)} to go.")
+
+    def _write() -> None:
+        out_path.write_text(json.dumps({
+            "dataset": "astronolan/galaxy10-aion",
+            "side": args.side,
+            "repo_id": args.repo_id if args.side == "equipped" else None,
+            "question": question,
+            "max_new_tokens": args.max_new_tokens,
+            "batch_size": args.batch_size,
+            "sampling": {
+                "n": args.n, "min_per_class": args.min_per_class, "seed": args.seed,
+                "actual_counts": sample["label_name"].value_counts().to_dict(),
+            },
+            "objects": objects,
+        }, indent=2))
+
+    with tqdm(total=len(rows), desc=f"collect [{args.side} captions]") as bar:
+        for start in range(0, len(rows), args.batch_size):
+            chunk = rows[start:start + args.batch_size]
+            if args.side == "equipped":
+                raw_inputs_list = [build_raw_inputs(row) for row in chunk]
+            else:
+                raw_inputs_list = [{"image": decode_rgb_image(row["image_rgb"])} for row in chunk]
+            captions = backend.generate_batch(raw_inputs_list, question, args.max_new_tokens)
+            if len(captions) != len(chunk):
+                raise RuntimeError(f"batched backend returned {len(captions)} captions for {len(chunk)} objects.")
+            for row, caption in zip(chunk, captions):
+                objects.append({
+                    "Galaxy10_DECals_index": int(row["Galaxy10_DECals_index"]),
+                    "label_name": row["label_name"],
+                    "caption": caption,
+                })
+            _write()
+            bar.update(len(chunk))
     if args.backend == "local":
         free_local_backend(backend)
 
-    output = {
-        "dataset": "astronolan/galaxy10-aion",
-        "side": args.side,
-        "repo_id": args.repo_id if args.side == "equipped" else None,
-        "question": None if args.side == "equipped" else BASE_CAPTION_QUESTION,
-        "max_new_tokens": args.max_new_tokens,
-        "sampling": {
-            "n": args.n, "min_per_class": args.min_per_class, "seed": args.seed,
-            "actual_counts": sample["label_name"].value_counts().to_dict(),
-        },
-        "objects": objects,
-    }
-
-    out_path = Path(args.out) if args.out else Path(_OUT_BY_SIDE[args.side])
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(output, indent=2))
+    _write()
     logger.info(f"Wrote {len(objects)} captions to {out_path}")
 
 
