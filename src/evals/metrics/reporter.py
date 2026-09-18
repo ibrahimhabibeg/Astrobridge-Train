@@ -44,7 +44,7 @@ def compute_caption_metrics(results_dir: str | Path, task: Any = None) -> Dict[s
         }
 
     if is_multilabel:
-        gt_sets, pred_sets = [], []
+        gt_sets, pred_sets, regimes = [], [], []
         for r in records:
             gt_val = r.get("ground_truth", {})
             if isinstance(gt_val, dict):
@@ -56,10 +56,29 @@ def compute_caption_metrics(results_dir: str | Path, task: Any = None) -> Dict[s
 
             p_val = r.get("frontier_evaluation", {}).get("prediction")
             pred_sets.append(set(p_val) if isinstance(p_val, (list, set)) else set())
+            regimes.append(r.get("regime"))
 
         task_metrics = {
             "mean_jaccard": mean_jaccard_index(gt_sets, pred_sets),
         }
+
+        if any(reg is not None for reg in regimes):
+            regime_groups: Dict[str, tuple[list, list]] = {}
+            for gt, pred, reg in zip(gt_sets, pred_sets, regimes):
+                if reg is not None:
+                    reg_key = str(reg)
+                    if reg_key not in regime_groups:
+                        regime_groups[reg_key] = ([], [])
+                    regime_groups[reg_key][0].append(gt)
+                    regime_groups[reg_key][1].append(pred)
+
+            task_metrics["regime_jaccard"] = {
+                reg: {
+                    "mean_jaccard": mean_jaccard_index(gts, preds),
+                    "samples": len(gts),
+                }
+                for reg, (gts, preds) in sorted(regime_groups.items())
+            }
     else:
         y_true, y_pred = [], []
         for r in records:

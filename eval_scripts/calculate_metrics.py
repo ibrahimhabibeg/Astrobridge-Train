@@ -40,7 +40,15 @@ def _print_metrics_summary(bundle: dict) -> None:
     print(f"{'=' * 60}")
 
     if "emission_lines" in task_name.lower():
-        print(f"  Mean Jaccard Index:     {metrics.get('mean_jaccard', 0.0):.4f}")
+        print(f"  Overall Mean Jaccard:   {metrics.get('mean_jaccard', 0.0):.4f}")
+        regime_jaccard = metrics.get("regime_jaccard")
+        if isinstance(regime_jaccard, dict) and regime_jaccard:
+            print("\n  By Regime:")
+            max_reg_len = max(len(str(r)) for r in regime_jaccard.keys())
+            for reg, data in regime_jaccard.items():
+                jacc_val = data.get("mean_jaccard", 0.0) if isinstance(data, dict) else data
+                count_str = f" ({data.get('samples')} samples)" if isinstance(data, dict) and "samples" in data else ""
+                print(f"    {reg:<{max_reg_len + 2}} {jacc_val:.4f}{count_str}")
     else:
         acc = metrics.get("accuracy", 0.0)
         corr = metrics.get("correct_samples", int(round(acc * total)))
