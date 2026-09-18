@@ -7,29 +7,25 @@ from typing import Any, Callable, Dict, List, Tuple
 import numpy as np
 from tqdm import tqdm
 
-from evals.metrics.classification import accuracy, macro_f1
+from evals.metrics.classification import accuracy
+from evals.metrics.multilabel import mean_jaccard_index
 
 
-def _sample_f1(y_true: List[Any], y_pred: List[Any]) -> float:
-    scores = []
-    for t, p in zip(y_true, y_pred):
-        set_t = set(t) if isinstance(t, (list, set, tuple)) else (set(t.keys()) if isinstance(t, dict) else {t})
-        set_p = set(p) if isinstance(p, (list, set, tuple)) else {p}
-        if not set_t and not set_p:
-            scores.append(1.0)
-            continue
-        tp = len(set_t & set_p)
-        prec = tp / len(set_p) if set_p else 0.0
-        rec = tp / len(set_t) if set_t else 0.0
-        f1 = (2 * prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
-        scores.append(f1)
-    return float(np.mean(scores)) if scores else 0.0
+def _sample_jaccard(y_true: List[Any], y_pred: List[Any]) -> float:
+    gt_sets = [
+        set(t.keys()) if isinstance(t, dict) else (set(t) if isinstance(t, (list, set, tuple)) else {t})
+        for t in y_true
+    ]
+    pred_sets = [
+        set(p) if isinstance(p, (list, set, tuple)) else ({p} if p is not None else set())
+        for p in y_pred
+    ]
+    return mean_jaccard_index(gt_sets, pred_sets)
 
 
 METRIC_FUNCTIONS: Dict[str, Callable[[List[Any], List[Any]], float]] = {
-    "macro-f1": macro_f1,
     "accuracy": accuracy,
-    "sample-f1": _sample_f1,
+    "jaccard": _sample_jaccard,
 }
 
 
@@ -120,7 +116,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Paired bootstrap test to compare two models.")
     parser.add_argument("--baseline", type=str, required=True, help="Baseline predictions.jsonl or run dir.")
     parser.add_argument("--treatment", type=str, required=True, help="Treatment predictions.jsonl or run dir.")
-    parser.add_argument("--metric", type=str, choices=list(METRIC_FUNCTIONS.keys()), default="macro-f1")
+    parser.add_argument("--metric", type=str, choices=list(METRIC_FUNCTIONS.keys()), default="accuracy")
     parser.add_argument("--n-bootstraps", type=int, default=10000)
     args = parser.parse_args()
 

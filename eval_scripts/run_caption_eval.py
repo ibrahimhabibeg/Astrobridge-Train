@@ -114,7 +114,7 @@ def run_caption_evaluation(
                 pred_set = set(pred) if isinstance(pred, (list, set)) else set()
                 is_correct = (gt_set == pred_set) if pred is not None else False
             else:
-                is_correct = (str(pred).strip().lower() == str(gt).strip().lower()) if pred is not None else False
+                is_correct = bool(pred is not None and str(pred).strip().lower() == str(gt).strip().lower())
 
             record = {
                 "sample_id": sid,
@@ -130,6 +130,7 @@ def run_caption_evaluation(
                     "frontier_model": frontier_config.get("gemini_model", frontier_config.get("frontier_type")),
                     "prompt": prompt,
                     "raw_response": f_resp.raw_text,
+                    "parsed_successfully": pred is not None,
                     "prediction": pred,
                     "is_correct": is_correct,
                     "forced_fallback": f_resp.forced_fallback,

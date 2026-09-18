@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import glob
-import json
 import sys
 from pathlib import Path
 from typing import List
@@ -41,30 +40,36 @@ def _print_metrics_summary(bundle: dict) -> None:
     print(f"{'=' * 60}")
 
     if "emission_lines" in task_name.lower():
-        print(f"  Sample-Mean Precision:  {metrics.get('sample_precision', 0.0):.4f}")
-        print(f"  Sample-Mean Recall:     {metrics.get('sample_recall', 0.0):.4f}")
-        print(f"  Sample-Mean F1:         {metrics.get('sample_f1', 0.0):.4f}")
-        print(f"  Dataset (Micro) F1:     {metrics.get('dataset_f1', 0.0):.4f}")
-        print(f"  Dataset Macro F1:       {metrics.get('dataset_macro_f1', 0.0):.4f}")
-        print(f"  Exact Match Rate:       {metrics.get('exact_match_rate', 0.0) * 100:.2f}%")
-        print(f"  SNR-Weighted F1:        {metrics.get('snr_weighted_f1', 0.0):.4f}")
+        print(f"  Mean Jaccard Index:     {metrics.get('mean_jaccard', 0.0):.4f}")
     else:
-        print(f"  Accuracy:               {metrics.get('accuracy', 0.0):.4f}")
-        print(f"  Macro F1:               {metrics.get('macro_f1', 0.0):.4f}")
-        print(f"  Weighted F1:            {metrics.get('weighted_f1', 0.0):.4f}")
-        if "ordinal_mae" in metrics:
-            print(f"  Ordinal MAE:            {metrics.get('ordinal_mae', 0.0):.4f}")
+        acc = metrics.get("accuracy", 0.0)
+        corr = metrics.get("correct_samples", int(round(acc * total)))
+        print(f"  Accuracy:               {acc * 100:.2f}% ({corr}/{total})")
+
+        cm = metrics.get("confusion_matrix")
+        if isinstance(cm, dict) and cm:
+            print("\nConfusion Matrix:")
+            true_labels = list(cm.keys())
+            pred_cols = list(next(iter(cm.values())).keys())
+            col_width = max(max(len(str(c)) for c in pred_cols), 10) + 2
+            row_width = max(max(len(str(r)) for r in true_labels), 12) + 2
+
+            header = f"{'True \\ Pred':<{row_width}}" + "".join(f"{c:>{col_width}}" for c in pred_cols)
+            print(f"  {header}")
+            for r in true_labels:
+                row_str = f"{r:<{row_width}}" + "".join(f"{cm[r].get(c, 0):>{col_width}}" for c in pred_cols)
+                print(f"  {row_str}")
 
     if diag:
         print("\nDiagnostics:")
         print(f"  Parse Success Rate:     {diag.get('frontier_parse_success_rate', 0.0) * 100:.1f}%")
-        print(f"  Fallback Rate:          {diag.get('frontier_fallback_rate', 0.0) * 100:.1f}%")
+        print(f"  Fallback Retry Rate:    {diag.get('frontier_fallback_rate', 0.0) * 100:.1f}%")
         print(f"  Avg Caption Words:      {diag.get('avg_caption_word_count', 0.0):.1f}")
     print(f"{'=' * 60}\n")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Calculate metrics and generate report from predictions.jsonl.")
+    parser = argparse.ArgumentParser(description="Calculate metrics from predictions.jsonl.")
     parser.add_argument("inputs", nargs="+", help="Path(s) to predictions.jsonl or result directories.")
     args = parser.parse_args()
 
@@ -77,7 +82,7 @@ def main() -> None:
         print(f"Processing: {file_path}")
         bundle = compute_caption_metrics(file_path)
         _print_metrics_summary(bundle)
-        print(f"Updated {file_path.parent / 'metrics.json'} and {file_path.parent / 'report.md'}")
+        print(f"Updated {file_path.parent / 'metrics.json'}")
 
 
 if __name__ == "__main__":

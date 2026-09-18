@@ -9,7 +9,12 @@ import pytest
 
 from src.evals.data import load_all_benchmark_spectra, load_benchmark_dataset
 from src.evals.frontier import MockFrontierJudge, get_frontier_judge
-from src.evals.metrics.reporter import compute_caption_metrics
+from src.evals.metrics import (
+    accuracy,
+    confusion_matrix_dict,
+    compute_caption_metrics,
+    mean_jaccard_index,
+)
 from src.evals.responders import MockCaptionResponder, SpectrumSample, get_responder
 from src.evals.tasks import (
     DistanceTask,
@@ -237,8 +242,10 @@ def test_compute_caption_metrics_classification(tmp_path: Path):
     bundle = compute_caption_metrics(tmp_path)
     assert bundle["total_samples"] == 3
     assert pytest.approx(bundle["task_metrics"]["accuracy"], 0.01) == 2 / 3
+    assert bundle["task_metrics"]["correct_samples"] == 2
+    assert "confusion_matrix" in bundle["task_metrics"]
     assert (tmp_path / "metrics.json").exists()
-    assert (tmp_path / "report.md").exists()
+    assert not (tmp_path / "report.md").exists()
 
 
 def test_compute_caption_metrics_multilabel(tmp_path: Path):
@@ -275,10 +282,30 @@ def test_compute_caption_metrics_multilabel(tmp_path: Path):
 
     bundle = compute_caption_metrics(tmp_path)
     assert bundle["total_samples"] == 2
-    assert "sample_f1" in bundle["task_metrics"]
-    assert "dataset_f1" in bundle["task_metrics"]
+    assert "mean_jaccard" in bundle["task_metrics"]
+    assert pytest.approx(bundle["task_metrics"]["mean_jaccard"], 0.01) == 0.75
     assert (tmp_path / "metrics.json").exists()
-    assert (tmp_path / "report.md").exists()
+    assert not (tmp_path / "report.md").exists()
+
+
+def test_metrics_functions():
+    y_true = ["Galaxy", "Galaxy", "Quasar"]
+    y_pred = ["Galaxy", None, "Galaxy"]
+    assert pytest.approx(accuracy(y_true, y_pred), 0.01) == 1 / 3
+
+    cm = confusion_matrix_dict(y_true, y_pred, labels=["Galaxy", "Quasar"])
+    assert cm["Galaxy"]["Galaxy"] == 1
+    assert cm["Galaxy"]["unclassified"] == 1
+    assert cm["Quasar"]["Galaxy"] == 1
+    assert cm["Quasar"]["Quasar"] == 0
+
+    gt_sets = [{"HALPHA"}, set()]
+    pred_sets = [{"HALPHA"}, set()]
+    assert mean_jaccard_index(gt_sets, pred_sets) == 1.0
+
+    gt_sets_miss = [{"HALPHA"}]
+    pred_sets_miss = [set()]
+    assert mean_jaccard_index(gt_sets_miss, pred_sets_miss) == 0.0
 
 
 def test_task_registry_resolution():
