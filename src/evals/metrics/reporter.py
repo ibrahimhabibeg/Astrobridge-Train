@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .classification import accuracy, confusion_matrix_dict
-from .multilabel import mean_jaccard_index
+from .multilabel import mean_jaccard_index, mean_recall, perfect_match_rate
 
 
 def compute_caption_metrics(results_dir: str | Path, task: Any = None) -> Dict[str, Any]:
@@ -72,13 +72,20 @@ def compute_caption_metrics(results_dir: str | Path, task: Any = None) -> Dict[s
                     regime_groups[reg_key][0].append(gt)
                     regime_groups[reg_key][1].append(pred)
 
-            task_metrics["regime_jaccard"] = {
-                reg: {
+            regime_metrics = {}
+            for reg, (gts, preds) in sorted(regime_groups.items()):
+                stats = {
                     "mean_jaccard": mean_jaccard_index(gts, preds),
                     "samples": len(gts),
                 }
-                for reg, (gts, preds) in sorted(regime_groups.items())
-            }
+                reg_clean = str(reg).strip().lower()
+                if reg_clean == "pure_negative":
+                    stats["perfect_match_rate"] = perfect_match_rate(gts, preds)
+                elif reg_clean == "high_snr_positive":
+                    stats["recall"] = mean_recall(gts, preds)
+                regime_metrics[reg] = stats
+
+            task_metrics["regime_jaccard"] = regime_metrics
     else:
         y_true, y_pred = [], []
         for r in records:

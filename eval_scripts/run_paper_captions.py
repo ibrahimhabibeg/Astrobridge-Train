@@ -413,11 +413,11 @@ def format_leaderboard(
 
 def format_regime_breakdown(results: Dict[str, Dict[str, Dict[str, Any]]]) -> str:
     lines = [
-        f"\n{'=' * 60}",
-        "Emission Lines Regime Breakdown (Mean Jaccard)",
-        f"{'=' * 60}",
-        f"{'Model ID':<22} {'Regime':<18} {'Jaccard':<10} {'Samples':<8}",
-        f"{'-' * 22} {'-' * 18} {'-' * 10} {'-' * 8}",
+        f"\n{'=' * 75}",
+        "Emission Lines Regime Breakdown",
+        f"{'=' * 75}",
+        f"{'Model ID':<22} {'Regime':<20} {'Jaccard':<10} {'Samples':<8} {'Note':<15}",
+        f"{'-' * 22} {'-' * 20} {'-' * 10} {'-' * 8} {'-' * 15}",
     ]
     has_any = False
     for mid, t_dict in results.items():
@@ -427,8 +427,13 @@ def format_regime_breakdown(results: Dict[str, Dict[str, Dict[str, Any]]]) -> st
             has_any = True
             jacc = d.get("mean_jaccard", 0.0)
             n = d.get("samples", 0)
-            lines.append(f"{mid:<22} {reg:<18} {jacc:<10.4f} {n:<8}")
-    lines.append(f"{'=' * 60}\n")
+            note = ""
+            if "perfect_match_rate" in d:
+                note = f"perfect: {d['perfect_match_rate'] * 100:.1f}%"
+            elif "recall" in d:
+                note = f"recall: {d['recall'] * 100:.1f}%"
+            lines.append(f"{mid:<22} {reg:<20} {jacc:<10.4f} {n:<8} {note:<15}")
+    lines.append(f"{'=' * 75}\n")
     return "\n".join(lines) if has_any else ""
 
 
@@ -449,6 +454,20 @@ def export_summary_csv(
     for reg in sorted_regimes:
         headers.append(f"lines_{reg}_jaccard")
 
+    has_pure_neg = any(
+        "perfect_match_rate" in t_dict.get("emission_lines", {}).get("task_metrics", {}).get("regime_jaccard", {}).get("pure_negative", {})
+        for t_dict in results.values()
+    )
+    has_high_snr = any(
+        "recall" in t_dict.get("emission_lines", {}).get("task_metrics", {}).get("regime_jaccard", {}).get("high_snr_positive", {})
+        for t_dict in results.values()
+    )
+
+    if has_pure_neg:
+        headers.append("lines_pure_negative_perfect_match")
+    if has_high_snr:
+        headers.append("lines_high_snr_positive_recall")
+
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(headers)
@@ -461,6 +480,12 @@ def export_summary_csv(
             for reg in sorted_regimes:
                 val = t_dict.get("emission_lines", {}).get("task_metrics", {}).get("regime_jaccard", {}).get(reg, {}).get("mean_jaccard")
                 row.append(f"{val:.4f}" if val is not None else "")
+            if has_pure_neg:
+                pm = t_dict.get("emission_lines", {}).get("task_metrics", {}).get("regime_jaccard", {}).get("pure_negative", {}).get("perfect_match_rate")
+                row.append(f"{pm:.4f}" if pm is not None else "")
+            if has_high_snr:
+                rec = t_dict.get("emission_lines", {}).get("task_metrics", {}).get("regime_jaccard", {}).get("high_snr_positive", {}).get("recall")
+                row.append(f"{rec:.4f}" if rec is not None else "")
             writer.writerow(row)
 
 

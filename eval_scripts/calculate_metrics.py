@@ -24,6 +24,8 @@ def _resolve_predictions_files(inputs: List[str]) -> List[Path]:
                 cand = p / "predictions.jsonl"
                 if cand.is_file():
                     resolved.append(cand)
+                else:
+                    resolved.extend(p.rglob("predictions.jsonl"))
             elif p.is_file():
                 resolved.append(p)
     return sorted(list(set(resolved)))
@@ -48,7 +50,13 @@ def _print_metrics_summary(bundle: dict) -> None:
             for reg, data in regime_jaccard.items():
                 jacc_val = data.get("mean_jaccard", 0.0) if isinstance(data, dict) else data
                 count_str = f" ({data.get('samples')} samples)" if isinstance(data, dict) and "samples" in data else ""
-                print(f"    {reg:<{max_reg_len + 2}} {jacc_val:.4f}{count_str}")
+                extra_str = ""
+                if isinstance(data, dict):
+                    if "perfect_match_rate" in data:
+                        extra_str = f" | perfect: {data['perfect_match_rate'] * 100:.1f}%"
+                    elif "recall" in data:
+                        extra_str = f" | recall: {data['recall'] * 100:.1f}%"
+                print(f"    {reg:<{max_reg_len + 2}} {jacc_val:.4f}{count_str}{extra_str}")
     else:
         acc = metrics.get("accuracy", 0.0)
         corr = metrics.get("correct_samples", int(round(acc * total)))
@@ -62,7 +70,8 @@ def _print_metrics_summary(bundle: dict) -> None:
             col_width = max(max(len(str(c)) for c in pred_cols), 10) + 2
             row_width = max(max(len(str(r)) for r in true_labels), 12) + 2
 
-            header = f"{'True \\ Pred':<{row_width}}" + "".join(f"{c:>{col_width}}" for c in pred_cols)
+            title = "True \\ Pred"
+            header = f"{title:<{row_width}}" + "".join(f"{c:>{col_width}}" for c in pred_cols)
             print(f"  {header}")
             for r in true_labels:
                 row_str = f"{r:<{row_width}}" + "".join(f"{cm[r].get(c, 0):>{col_width}}" for c in pred_cols)

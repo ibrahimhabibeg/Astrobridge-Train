@@ -14,6 +14,8 @@ from src.evals.metrics import (
     confusion_matrix_dict,
     compute_caption_metrics,
     mean_jaccard_index,
+    mean_recall,
+    perfect_match_rate,
 )
 from src.evals.responders import MockCaptionResponder, SpectrumSample, get_responder
 from src.evals.tasks import (
@@ -62,15 +64,15 @@ def test_distance_task():
 
     # Test default initialization from benchmark dataset
     task = DistanceTask()
-    assert task.extract_ground_truth({"ground_truth": {"redshift_bin": "<0.1"}}) == "A"
-    assert task.extract_ground_truth({"ground_truth": {"redshift_bin": "0.1-0.5"}}) == "B"
-    assert task.extract_ground_truth({"ground_truth": {"redshift_bin": ">0.5"}}) == "C"
+    assert task.extract_ground_truth({"ground_truth": {"redshift_bin": "Very Close (z < 0.1)"}}) == "A"
+    assert task.extract_ground_truth({"ground_truth": {"redshift_bin": "Close (0.1 < z < 0.5)"}}) == "B"
+    assert task.extract_ground_truth({"ground_truth": {"redshift_bin": "Far (z > 0.5)"}}) == "C"
 
     prompt = task.build_frontier_prompt("Caption: Redshift around 0.2.")
     assert "Allowed categories:" in prompt
-    assert "A: <0.1" in prompt
-    assert "B: 0.1-0.5" in prompt
-    assert "C: >0.5" in prompt
+    assert "A: Very Close (z < 0.1)" in prompt
+    assert "B: Close (0.1 < z < 0.5)" in prompt
+    assert "C: Far (z > 0.5)" in prompt
 
     assert task.default_parse("FINAL ANSWER: B") == "B"
     assert task.default_parse("FINAL ANSWER: A\nWait, FINAL ANSWER: B") == "B"
@@ -255,6 +257,7 @@ def test_compute_caption_metrics_multilabel(tmp_path: Path):
             "sample_id": "1",
             "task": "emission_lines",
             "ground_truth": {"HALPHA": 10.0, "HBETA": 5.0},
+            "regime": "high_snr_positive",
             "caption": {"text": "Caption 1."},
             "frontier_evaluation": {
                 "prediction": ["HALPHA", "HBETA"],
@@ -267,10 +270,37 @@ def test_compute_caption_metrics_multilabel(tmp_path: Path):
             "sample_id": "2",
             "task": "emission_lines",
             "ground_truth": {"HALPHA": 8.0},
+            "regime": "high_snr_positive",
             "caption": {"text": "Caption 2."},
             "frontier_evaluation": {
                 "prediction": ["HALPHA", "OIII_5007"],
                 "raw_response": "EMISSION LINES: HALPHA, OIII_5007",
+                "forced_fallback": False,
+                "is_correct": False,
+            },
+        },
+        {
+            "sample_id": "3",
+            "task": "emission_lines",
+            "ground_truth": {},
+            "regime": "pure_negative",
+            "caption": {"text": "Caption 3."},
+            "frontier_evaluation": {
+                "prediction": [],
+                "raw_response": "EMISSION LINES: NONE",
+                "forced_fallback": False,
+                "is_correct": True,
+            },
+        },
+        {
+            "sample_id": "4",
+            "task": "emission_lines",
+            "ground_truth": {},
+            "regime": "pure_negative",
+            "caption": {"text": "Caption 4."},
+            "frontier_evaluation": {
+                "prediction": ["OIII_5007"],
+                "raw_response": "EMISSION LINES: OIII_5007",
                 "forced_fallback": False,
                 "is_correct": False,
             },
@@ -281,9 +311,13 @@ def test_compute_caption_metrics_multilabel(tmp_path: Path):
             f.write(json.dumps(r) + "\n")
 
     bundle = compute_caption_metrics(tmp_path)
-    assert bundle["total_samples"] == 2
+    assert bundle["total_samples"] == 4
     assert "mean_jaccard" in bundle["task_metrics"]
-    assert pytest.approx(bundle["task_metrics"]["mean_jaccard"], 0.01) == 0.75
+    reg_jaccard = bundle["task_metrics"]["regime_jaccard"]
+    assert "high_snr_positive" in reg_jaccard
+    assert "pure_negative" in reg_jaccard
+    assert pytest.approx(reg_jaccard["high_snr_positive"]["recall"], 0.01) == 1.0
+    assert pytest.approx(reg_jaccard["pure_negative"]["perfect_match_rate"], 0.01) == 0.5
     assert (tmp_path / "metrics.json").exists()
     assert not (tmp_path / "report.md").exists()
 
@@ -306,6 +340,9 @@ def test_metrics_functions():
     gt_sets_miss = [{"HALPHA"}]
     pred_sets_miss = [set()]
     assert mean_jaccard_index(gt_sets_miss, pred_sets_miss) == 0.0
+
+    assert perfect_match_rate([set(), {"A"}], [set(), {"B"}]) == 0.5
+    assert mean_recall([{"A", "B"}, {"A"}], [{"A"}, {"A", "B"}]) == (0.5 + 1.0) / 2
 
 
 def test_task_registry_resolution():
